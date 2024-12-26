@@ -1,6 +1,4 @@
 from sqlalchemy import Column, Integer, String, Float, Boolean
-from sqlalchemy.orm import relationship
-
 from app.db.base import Base
 
 class Child(Base):
@@ -11,6 +9,14 @@ class Child(Base):
     gender = Column(String(10), nullable=False)
     height = Column(Float, nullable=False)
     weight = Column(Float, nullable=False)
-    age = Column(Integer, nullable=False)
+    age = Column(Integer, nullable=True)
     is_stunting = Column(Boolean, nullable=False)
-    images = relationship("ChildImage", back_populates="child", cascade="all, delete-orphan")
+    image_front_name = Column(String(500), nullable=True)
+    image_front_original_name = Column(String(255), nullable=True)
+    image_back_name = Column(String(500), nullable=True)
+    image_back_original_name = Column(String(255), nullable=True)
+    image_left_name = Column(String(500), nullable=True)
+    image_left_original_name = Column(String(255), nullable=True)
+    image_right_name = Column(String(500), nullable=True)
+    image_right_original_name = Column(String(255), nullable=True)
+
