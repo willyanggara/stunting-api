@@ -22,4 +22,4 @@ static/images/*
 !static/images/.gitkeep
 
 *.so
-/static/child_images/
+/static/child_images/*
