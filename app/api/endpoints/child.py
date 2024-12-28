@@ -12,7 +12,6 @@ from app.core.config import settings
 
 router = APIRouter()
 
-
 @router.get("/summary", response_model=child_schema.SummaryChildren)
 def get_summary(db: Session = Depends(deps.get_db)):
     total_data = db.query(child_model.Child).count()
