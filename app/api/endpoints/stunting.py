@@ -3,7 +3,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.api import deps
 from app.models import child as child_model
-from app.schemas import child as child_schema
+from app.models.stunting import ModelMetrics
+from app.schemas import stunting as stunting_schema
 from tensorflow.keras.applications import MobileNetV2
 from tensorflow.keras.layers import Dense, GlobalAveragePooling2D, Concatenate, Input, Dropout
 from tensorflow.keras.models import Model, load_model
@@ -74,6 +75,7 @@ def create_model():
     model.compile(optimizer=Adam(learning_rate=0.0001), loss='mse')
 
     return model
+
 
 def load_or_create_model():
     if os.path.exists(MODEL_PATH):
@@ -160,13 +162,16 @@ def train_model(db: Session):
     joblib.dump(scaler, SCALER_PATH)
 
 
-@router.post("/train-model")
+@router.post("/train-model", response_model=stunting_schema.TrainModelResponse)
 def train_stunting_model(db: Session = Depends(deps.get_db)):
     train_model(db)
-    return {"message": "Model trained successfully and saved"}
+    return {
+        "value": True,
+        "message": "Model trained successfully and saved"
+    }
 
 
-@router.get("/check-model")
+@router.get("/check-model", response_model=stunting_schema.CheckModelResponse)
 def check_model_exists():
     model_exists = os.path.exists(MODEL_PATH)
     scaler_exists = os.path.exists(SCALER_PATH)
@@ -176,15 +181,15 @@ def check_model_exists():
         return {
             "model_exists": True,
             "model_path": MODEL_PATH,
-            "model_modified": datetime.fromtimestamp(model_modified).isoformat(),
+            "model_modified": datetime.fromtimestamp(model_modified),
             "scaler_path": SCALER_PATH,
-            "scaler_modified": datetime.fromtimestamp(scaler_modified).isoformat()
+            "scaler_modified": datetime.fromtimestamp(scaler_modified)
         }
     else:
         return {"model_exists": False}
 
 
-@router.post("/predict")
+@router.post("/predict", response_model=stunting_schema.PredictionResponse)
 def predict_height_weight(child_id: int, db: Session = Depends(deps.get_db)):
     if not os.path.exists(MODEL_PATH) or not os.path.exists(SCALER_PATH):
         raise HTTPException(status_code=400, detail="Model or scaler not found. Please train the model first.")
@@ -211,7 +216,8 @@ def predict_height_weight(child_id: int, db: Session = Depends(deps.get_db)):
 
     predicted_height, predicted_weight = prediction[0]
 
-    logging.info(f"Prediction made for child ID {child_id}: Height: {predicted_height:.2f}, Weight: {predicted_weight:.2f}")
+    logging.info(
+        f"Prediction made for child ID {child_id}: Height: {predicted_height:.2f}, Weight: {predicted_weight:.2f}")
 
     return {
         "child_id": child.id,
@@ -221,16 +227,35 @@ def predict_height_weight(child_id: int, db: Session = Depends(deps.get_db)):
         "predicted_weight": float(predicted_weight)
     }
 
-@router.get("/evaluate-model")
+
+@router.get("/evaluate-model", response_model=stunting_schema.EvaluationResponse)
 def evaluate_stunting_model(db: Session = Depends(deps.get_db)):
     try:
         metrics = evaluate_model(db)
+        # Save metrics to the database
+        db_metrics = ModelMetrics(**metrics)
+        db.add(db_metrics)
+        db.commit()
+        db.refresh(db_metrics)
+
         return {
-            "message": "Model evaluation completed successfully",
+            "value": True,
+            "message": "Model evaluation completed successfully and metrics saved to database",
             "metrics": metrics
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/get-metrics", response_model=stunting_schema.ModelMetrics)
+def get_metrics(db: Session = Depends(deps.get_db)):
+    metrics = db.query(ModelMetrics).order_by(ModelMetrics.created_at.desc()).first()
+    return {
+        "mae_height": metrics.mae_height,
+        "mae_weight": metrics.mae_weight,
+        "rmse_height": metrics.rmse_height,
+        "rmse_weight": metrics.rmse_weight,
+        "created_at": metrics.created_at
+    }
 
 
 def evaluate_model(db: Session):
@@ -273,12 +298,14 @@ def evaluate_model(db: Session):
     rmse_height = math.sqrt(mean_squared_error(y_true[:, 0], y_pred[:, 0]))
     rmse_weight = math.sqrt(mean_squared_error(y_true[:, 1], y_pred[:, 1]))
 
-    logging.info(f"Model evaluation completed. MAE Height: {mae_height:.2f}, MAE Weight: {mae_weight:.2f}, RMSE Height: {rmse_height:.2f}, RMSE Weight: {rmse_weight:.2f}")
+    logging.info(
+        f"Model evaluation completed. MAE Height: {mae_height:.2f}, MAE Weight: {mae_weight:.2f}, RMSE Height: {rmse_height:.2f}, RMSE Weight: {rmse_weight:.2f}")
 
     return {
         "mae_height": mae_height,
         "mae_weight": mae_weight,
         "rmse_height": rmse_height,
-        "rmse_weight": rmse_weight
+        "rmse_weight": rmse_weight,
+        "created_at": datetime.now()
     }
 

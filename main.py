@@ -22,4 +22,3 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 # Include API routes
 app.include_router(child.router, prefix=f"{settings.API_V1_STR}/children", tags=["children"])
 app.include_router(stunting.router, prefix=f"{settings.API_V1_STR}/stunting", tags=["stunting"])
-

@@ -19,4 +19,7 @@ class Child(Base):
     image_left_original_name = Column(String(255), nullable=True)
     image_right_name = Column(String(500), nullable=True)
     image_right_original_name = Column(String(255), nullable=True)
+    predict_height = Column(Float, nullable=True)
+    predict_weight = Column(Float, nullable=True)
+    predict_stunting = Column(String(100), nullable=True)
 
