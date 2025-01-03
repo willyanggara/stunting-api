@@ -1,10 +1,13 @@
+import os
+import math
+import logging
+from datetime import datetime
+
+import joblib
+import numpy as np
 import tensorflow as tf
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from app.api import deps
-from app.models import child as child_model
-from app.models.stunting import ModelMetrics
-from app.schemas import stunting as stunting_schema
 from tensorflow.keras.applications import MobileNetV2
 from tensorflow.keras.layers import Dense, GlobalAveragePooling2D, Concatenate, Input, Dropout
 from tensorflow.keras.models import Model, load_model
@@ -12,87 +15,91 @@ from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.callbacks import ReduceLROnPlateau, EarlyStopping
 from tensorflow.keras.preprocessing.image import load_img, img_to_array
 from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, KFold
 from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import mean_absolute_error, mean_squared_error
-import numpy as np
-import os
-import joblib
-import math
-from datetime import datetime
-import logging
+from sklearn.metrics import mean_squared_error, mean_absolute_error
+
+from app.api import deps
+from app.models import child as child_model
+from app.models.stunting import ModelMetrics
+from app.schemas import stunting as stunting_schema
+
+# Constants
+MODEL_DIR = "stunting-models"
+MODEL_PATH = os.path.join(MODEL_DIR, "stunting_model.h5")
+SCALER_PATH = os.path.join(MODEL_DIR, "scaler.joblib")
+IMAGE_SIZE = (224, 224)
+BATCH_SIZE = 16
+EPOCHS = 100
+K_FOLD = 2
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 router = APIRouter()
 
-MODEL_DIR = "stunting-models"
-MODEL_PATH = os.path.join(MODEL_DIR, "stunting_model.h5")
-SCALER_PATH = os.path.join(MODEL_DIR, "scaler.joblib")
+def load_and_preprocess_images(children):
+    x_front, x_back, x_left, x_right, y = [], [], [], [], []
+    for child in children:
+        if validate_images(child):
+            x_front.append(preprocess_image(os.path.join("static", "child_images", child.image_front_name)))
+            x_back.append(preprocess_image(os.path.join("static", "child_images", child.image_back_name)))
+            x_left.append(preprocess_image(os.path.join("static", "child_images", child.image_left_name)))
+            x_right.append(preprocess_image(os.path.join("static", "child_images", child.image_right_name)))
+            y.append([child.height, child.weight])
+    return np.vstack(x_front), np.vstack(x_back), np.vstack(x_left), np.vstack(x_right), np.array(y)
 
+def create_and_compile_model():
+    input_front = Input(shape=(*IMAGE_SIZE, 3))
+    input_back = Input(shape=(*IMAGE_SIZE, 3))
+    input_left = Input(shape=(*IMAGE_SIZE, 3))
+    input_right = Input(shape=(*IMAGE_SIZE, 3))
 
-def create_model():
-    # Create four input layers for each image
-    input_front = Input(shape=(224, 224, 3))
-    input_back = Input(shape=(224, 224, 3))
-    input_left = Input(shape=(224, 224, 3))
-    input_right = Input(shape=(224, 224, 3))
-
-    # Base model (MobileNetV2) for feature extraction
-    base_model = MobileNetV2(weights='imagenet', include_top=False, input_shape=(224, 224, 3))
-
-    # Unfreeze the last few layers for fine-tuning
+    base_model = MobileNetV2(weights='imagenet', include_top=False, input_shape=(*IMAGE_SIZE, 3))
     for layer in base_model.layers[-20:]:
         layer.trainable = True
 
-    # Process each input
-    x_front = base_model(input_front)
-    x_back = base_model(input_back)
-    x_left = base_model(input_left)
-    x_right = base_model(input_right)
+    def process_input(input_layer):
+        x = base_model(input_layer)
+        return GlobalAveragePooling2D()(x)
 
-    # Global average pooling
-    x_front = GlobalAveragePooling2D()(x_front)
-    x_back = GlobalAveragePooling2D()(x_back)
-    x_left = GlobalAveragePooling2D()(x_left)
-    x_right = GlobalAveragePooling2D()(x_right)
-
-    # Concatenate features from all images
-    x = Concatenate()([x_front, x_back, x_left, x_right])
-
-    # Dense layers with dropout
+    x = Concatenate()([process_input(input) for input in [input_front, input_back, input_left, input_right]])
     x = Dense(1024, activation='relu')(x)
     x = Dropout(0.5)(x)
     x = Dense(512, activation='relu')(x)
     x = Dropout(0.3)(x)
-    output = Dense(2, activation='linear')(x)  # 2 outputs: height and weight
+    output = Dense(2, activation='linear')(x)
 
-    # Create the model
     model = Model(inputs=[input_front, input_back, input_left, input_right], outputs=output)
-
-    # Compile the model
     model.compile(optimizer=Adam(learning_rate=0.0001), loss='mse')
-
     return model
 
+def train_model_with_data(model, x_train, y_train, x_val, y_val):
+    reduce_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.2, patience=5, min_lr=1e-6)
+    early_stopping = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
 
-def load_or_create_model():
-    if os.path.exists(MODEL_PATH):
-        return load_model(MODEL_PATH)
-    else:
-        return create_model()
+    model.fit(
+        x_train, y_train,
+        epochs=EPOCHS,
+        batch_size=BATCH_SIZE,
+        validation_data=(x_val, y_val),
+        callbacks=[reduce_lr, early_stopping],
+        verbose=1
+    )
+    return model
 
-
-model = load_or_create_model()
-
+def calculate_metrics(y_true, y_pred):
+    mae_height = round(mean_absolute_error(y_true[:, 0], y_pred[:, 0]), 2)
+    mae_weight = round(mean_absolute_error(y_true[:, 1], y_pred[:, 1]), 2)
+    rmse_height = round(np.sqrt(mean_squared_error(y_true[:, 0], y_pred[:, 0])), 2)
+    rmse_weight = round(np.sqrt(mean_squared_error(y_true[:, 1], y_pred[:, 1])), 2)
+    return mae_height, mae_weight, rmse_height, rmse_weight
 
 def preprocess_image(image_path):
-    img = load_img(image_path)
+    img = load_img(image_path, target_size=IMAGE_SIZE)
     img_array = img_to_array(img)
     img_array = np.expand_dims(img_array, axis=0)
     return preprocess_input(img_array)
-
 
 def validate_images(child):
     required_images = ['image_front_name', 'image_back_name', 'image_left_name', 'image_right_name']
@@ -104,72 +111,51 @@ def validate_images(child):
             return False
     return True
 
-
 def train_model(db: Session):
     children = db.query(child_model.Child).all()
+    x_front, x_back, x_left, x_right, y = load_and_preprocess_images(children)
 
-    X_front, X_back, X_left, X_right = [], [], [], []
-    y = []
-
-    for child in children:
-        if validate_images(child):
-            X_front.append(preprocess_image(os.path.join("static", "child_images", child.image_front_name)))
-            X_back.append(preprocess_image(os.path.join("static", "child_images", child.image_back_name)))
-            X_left.append(preprocess_image(os.path.join("static", "child_images", child.image_left_name)))
-            X_right.append(preprocess_image(os.path.join("static", "child_images", child.image_right_name)))
-            y.append([child.height, child.weight])
-
-    if not X_front:
+    if len(y) == 0:
         raise HTTPException(status_code=400, detail="No valid data found for training")
 
-    X_front = np.vstack(X_front)
-    X_back = np.vstack(X_back)
-    X_left = np.vstack(X_left)
-    X_right = np.vstack(X_right)
-    y = np.array(y)
-
-    # Normalize the target values
     scaler = StandardScaler()
     y_scaled = scaler.fit_transform(y)
 
-    # Split data
-    X_train_front, X_test_front, X_train_back, X_test_back, X_train_left, X_test_left, X_train_right, X_test_right, y_train, y_test = train_test_split(
-        X_front, X_back, X_left, X_right, y_scaled, test_size=0.2, random_state=42
+    # Split each input array separately
+    x_train_front, x_val_front, \
+    x_train_back, x_val_back, \
+    x_train_left, x_val_left, \
+    x_train_right, x_val_right, \
+    y_train, y_val = train_test_split(
+        x_front, x_back, x_left, x_right, y_scaled,
+        test_size=0.2, random_state=42
     )
 
-    logging.info(f"Starting model training with {len(X_front)} samples")
-
-    # Callbacks
-    reduce_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.2, patience=5, min_lr=1e-6)
-    early_stopping = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
-
-    # Train the model
-    model.fit(
-        [X_train_front, X_train_back, X_train_left, X_train_right],
+    model = create_and_compile_model()
+    model = train_model_with_data(
+        model,
+        [x_train_front, x_train_back, x_train_left, x_train_right],
         y_train,
-        epochs=100,
-        batch_size=16,
-        validation_data=([X_test_front, X_test_back, X_test_left, X_test_right], y_test),
-        callbacks=[reduce_lr, early_stopping],
-        verbose=1
+        [x_val_front, x_val_back, x_val_left, x_val_right],
+        y_val
     )
 
-    logging.info("Model training completed")
-
-    # Save the trained model and scaler
     os.makedirs(MODEL_DIR, exist_ok=True)
     model.save(MODEL_PATH)
     joblib.dump(scaler, SCALER_PATH)
 
+    return True
 
 @router.post("/train-model", response_model=stunting_schema.TrainModelResponse)
 def train_stunting_model(db: Session = Depends(deps.get_db)):
-    train_model(db)
-    return {
-        "value": True,
-        "message": "Model trained successfully and saved"
-    }
-
+    try:
+        success = train_model(db)
+        return {
+            "value": success,
+            "message": "Model trained successfully and saved" if success else "Model training failed"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/check-model", response_model=stunting_schema.CheckModelResponse)
 def check_model_exists():
@@ -187,46 +173,6 @@ def check_model_exists():
         }
     else:
         return {"model_exists": False}
-
-
-@router.post("/predict", response_model=stunting_schema.PredictionResponse)
-def predict_height_weight(child_id: int, db: Session = Depends(deps.get_db)):
-    if not os.path.exists(MODEL_PATH) or not os.path.exists(SCALER_PATH):
-        raise HTTPException(status_code=400, detail="Model or scaler not found. Please train the model first.")
-
-    child = db.query(child_model.Child).filter(child_model.Child.id == child_id).first()
-    if not child:
-        raise HTTPException(status_code=404, detail="Child not found")
-
-    if not validate_images(child):
-        raise HTTPException(status_code=400, detail="Child is missing one or more required images")
-
-    # Preprocess the images
-    img_front = preprocess_image(os.path.join("static", "child_images", child.image_front_name))
-    img_back = preprocess_image(os.path.join("static", "child_images", child.image_back_name))
-    img_left = preprocess_image(os.path.join("static", "child_images", child.image_left_name))
-    img_right = preprocess_image(os.path.join("static", "child_images", child.image_right_name))
-
-    # Make prediction
-    scaled_prediction = model.predict([img_front, img_back, img_left, img_right])
-
-    # Load the scaler and inverse transform the prediction
-    scaler = joblib.load(SCALER_PATH)
-    prediction = scaler.inverse_transform(scaled_prediction)
-
-    predicted_height, predicted_weight = prediction[0]
-
-    logging.info(
-        f"Prediction made for child ID {child_id}: Height: {predicted_height:.2f}, Weight: {predicted_weight:.2f}")
-
-    return {
-        "child_id": child.id,
-        "actual_height": child.height,
-        "actual_weight": child.weight,
-        "predicted_height": float(predicted_height),
-        "predicted_weight": float(predicted_weight)
-    }
-
 
 @router.get("/evaluate-model", response_model=stunting_schema.EvaluationResponse)
 def evaluate_stunting_model(db: Session = Depends(deps.get_db)):
@@ -246,9 +192,42 @@ def evaluate_stunting_model(db: Session = Depends(deps.get_db)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+def evaluate_model(db: Session):
+    if not os.path.exists(MODEL_PATH) or not os.path.exists(SCALER_PATH):
+        raise HTTPException(status_code=400, detail="Model or scaler not found. Please train the model first.")
+
+    children = db.query(child_model.Child).all()
+    x_front, x_back, x_left, x_right, y_true = load_and_preprocess_images(children)
+
+    if len(y_true) == 0:
+        raise HTTPException(status_code=400, detail="No valid data found for evaluation")
+
+    # Load the model and scaler
+    model = load_model(MODEL_PATH)
+    scaler = joblib.load(SCALER_PATH)
+
+    # Make predictions
+    y_pred_scaled = model.predict([x_front, x_back, x_left, x_right])
+    y_pred = scaler.inverse_transform(y_pred_scaled)
+
+    # Calculate metrics
+    mae_height, mae_weight, rmse_height, rmse_weight = calculate_metrics(y_true, y_pred)
+
+    logging.info(f"Model evaluation completed. MAE Height: {mae_height:.2f}, MAE Weight: {mae_weight:.2f}, RMSE Height: {rmse_height:.2f}, RMSE Weight: {rmse_weight:.2f}")
+
+    return {
+        "mae_height": mae_height,
+        "mae_weight": mae_weight,
+        "rmse_height": rmse_height,
+        "rmse_weight": rmse_weight,
+        "created_at": datetime.now()
+    }
+
 @router.get("/get-metrics", response_model=stunting_schema.ModelMetrics)
 def get_metrics(db: Session = Depends(deps.get_db)):
     metrics = db.query(ModelMetrics).order_by(ModelMetrics.created_at.desc()).first()
+    if not metrics:
+        raise HTTPException(status_code=404, detail="No metrics found")
     return {
         "mae_height": metrics.mae_height,
         "mae_weight": metrics.mae_weight,
@@ -257,55 +236,90 @@ def get_metrics(db: Session = Depends(deps.get_db)):
         "created_at": metrics.created_at
     }
 
-
-def evaluate_model(db: Session):
+@router.post("/predict", response_model=stunting_schema.PredictionResponse)
+def predict_height_weight(child_id: int, db: Session = Depends(deps.get_db)):
     if not os.path.exists(MODEL_PATH) or not os.path.exists(SCALER_PATH):
         raise HTTPException(status_code=400, detail="Model or scaler not found. Please train the model first.")
 
-    children = db.query(child_model.Child).all()
+    child = db.query(child_model.Child).filter(child_model.Child.id == child_id).first()
+    if not child:
+        raise HTTPException(status_code=404, detail="Child not found")
 
-    X_front, X_back, X_left, X_right = [], [], [], []
-    y_true = []
+    if not validate_images(child):
+        raise HTTPException(status_code=400, detail="Child is missing one or more required images")
 
-    for child in children:
-        if validate_images(child):
-            X_front.append(preprocess_image(os.path.join("static", "child_images", child.image_front_name)))
-            X_back.append(preprocess_image(os.path.join("static", "child_images", child.image_back_name)))
-            X_left.append(preprocess_image(os.path.join("static", "child_images", child.image_left_name)))
-            X_right.append(preprocess_image(os.path.join("static", "child_images", child.image_right_name)))
-            y_true.append([child.height, child.weight])
+    x_front, x_back, x_left, x_right, _ = load_and_preprocess_images([child])
 
-    if not X_front:
-        raise HTTPException(status_code=400, detail="No valid data found for evaluation")
-
-    X_front = np.vstack(X_front)
-    X_back = np.vstack(X_back)
-    X_left = np.vstack(X_left)
-    X_right = np.vstack(X_right)
-    y_true = np.array(y_true)
-
-    # Load the model and scaler
     model = load_model(MODEL_PATH)
     scaler = joblib.load(SCALER_PATH)
 
-    # Make predictions
-    y_pred_scaled = model.predict([X_front, X_back, X_left, X_right])
-    y_pred = scaler.inverse_transform(y_pred_scaled)
+    scaled_prediction = model.predict([x_front, x_back, x_left, x_right])
+    prediction = scaler.inverse_transform(scaled_prediction)
 
-    # Calculate metrics
-    mae_height = mean_absolute_error(y_true[:, 0], y_pred[:, 0])
-    mae_weight = mean_absolute_error(y_true[:, 1], y_pred[:, 1])
-    rmse_height = math.sqrt(mean_squared_error(y_true[:, 0], y_pred[:, 0]))
-    rmse_weight = math.sqrt(mean_squared_error(y_true[:, 1], y_pred[:, 1]))
+    predicted_height, predicted_weight = prediction[0]
 
-    logging.info(
-        f"Model evaluation completed. MAE Height: {mae_height:.2f}, MAE Weight: {mae_weight:.2f}, RMSE Height: {rmse_height:.2f}, RMSE Weight: {rmse_weight:.2f}")
+    logging.info(f"Prediction made for child ID {child_id}: Height: {predicted_height:.2f}, Weight: {predicted_weight:.2f}")
 
     return {
-        "mae_height": mae_height,
-        "mae_weight": mae_weight,
-        "rmse_height": rmse_height,
-        "rmse_weight": rmse_weight,
-        "created_at": datetime.now()
+        "child_id": child.id,
+        "actual_height": child.height,
+        "actual_weight": child.weight,
+        "predicted_height": float(predicted_height),
+        "predicted_weight": float(predicted_weight)
+    }
+
+@router.post("/cross-validate", response_model=stunting_schema.CrossValidationResponse)
+def cross_validate_model(db: Session = Depends(deps.get_db)):
+    children = db.query(child_model.Child).all()
+    x_front, x_back, x_left, x_right, y = load_and_preprocess_images(children)
+
+    if len(y) == 0:
+        raise HTTPException(status_code=400, detail="No valid data found for cross-validation")
+
+    scaler = StandardScaler()
+    y_scaled = scaler.fit_transform(y)
+
+    kf = KFold(n_splits=K_FOLD, shuffle=True, random_state=42)
+    mae_height_scores, mae_weight_scores, rmse_height_scores, rmse_weight_scores = [], [], [], []
+
+    for fold, (train_index, val_index) in enumerate(kf.split(x_front), 1):
+        logging.info(f"Cross-validating fold {fold}/{K_FOLD}")
+
+        x_train = [x[train_index] for x in [x_front, x_back, x_left, x_right]]
+        x_val = [x[val_index] for x in [x_front, x_back, x_left, x_right]]
+        y_train, y_val = y_scaled[train_index], y_scaled[val_index]
+
+        model = create_and_compile_model()
+        model = train_model_with_data(model, x_train, y_train, x_val, y_val)
+
+        y_pred_scaled = model.predict(x_val)
+        y_pred = scaler.inverse_transform(y_pred_scaled)
+        y_true = scaler.inverse_transform(y_val)
+
+        mae_height, mae_weight, rmse_height, rmse_weight = calculate_metrics(y_true, y_pred)
+
+        mae_height_scores.append(mae_height)
+        mae_weight_scores.append(mae_weight)
+        rmse_height_scores.append(rmse_height)
+        rmse_weight_scores.append(rmse_weight)
+
+        logging.info(f"Fold {fold} - MAE Height: {mae_height:.2f}, MAE Weight: {mae_weight:.2f}, RMSE Height: {rmse_height:.2f}, RMSE Weight: {rmse_weight:.2f}")
+
+    mean_mae_height, mean_mae_weight = np.mean(mae_height_scores), np.mean(mae_weight_scores)
+    mean_rmse_height, mean_rmse_weight = np.mean(rmse_height_scores), np.mean(rmse_weight_scores)
+
+    logging.info(f"Mean MAE Height: {mean_mae_height:.2f}, Mean MAE Weight: {mean_mae_weight:.2f}")
+    logging.info(f"Mean RMSE Height: {mean_rmse_height:.2f}, Mean RMSE Weight: {mean_rmse_weight:.2f}")
+
+    return {
+        "k_fold": K_FOLD,
+        "mae_height_scores": mae_height_scores,
+        "mae_weight_scores": mae_weight_scores,
+        "rmse_height_scores": rmse_height_scores,
+        "rmse_weight_scores": rmse_weight_scores,
+        "mean_mae_height": mean_mae_height,
+        "mean_mae_weight": mean_mae_weight,
+        "mean_rmse_height": mean_rmse_height,
+        "mean_rmse_weight": mean_rmse_weight
     }
 
