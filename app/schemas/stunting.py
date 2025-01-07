@@ -28,8 +28,16 @@ class PredictionResponse(BaseModel):
     child_id: int
     actual_height: float
     actual_weight: float
+    actual_stunting: bool
     predicted_height: float
     predicted_weight: float
+    predicted_stunting: bool
+    predicted_wasting: bool
+    predicted_overweight: bool
+
+class PredictAllResponse(BaseModel):
+    total_predictions: int
+    predictions: List[PredictionResponse]
 
 class ModelMetrics(BaseModel):
     mae_height: float
@@ -43,3 +51,12 @@ class EvaluationResponse(BaseModel):
     message: str
     metrics: ModelMetrics
 
+class SystemPerformanceResponse(BaseModel):
+    precision: float
+    recall: float
+    f1_score: float
+    true_positives: int
+    false_positives: int
+    true_negatives: int
+    false_negatives: int
+    total_samples: int

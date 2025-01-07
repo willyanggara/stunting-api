@@ -21,5 +21,7 @@ class Child(Base):
     image_right_original_name = Column(String(255), nullable=True)
     predict_height = Column(Float, nullable=True)
     predict_weight = Column(Float, nullable=True)
-    predict_stunting = Column(String(100), nullable=True)
+    predict_stunting = Column(Boolean, nullable=True)
+    predict_wasting = Column(Boolean, nullable=True)
+    predict_overweight = Column(Boolean, nullable=True)
 

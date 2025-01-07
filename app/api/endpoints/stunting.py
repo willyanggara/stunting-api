@@ -2,6 +2,7 @@ import os
 import math
 import logging
 from datetime import datetime
+from typing import List
 
 import joblib
 import numpy as np
@@ -17,12 +18,13 @@ from tensorflow.keras.preprocessing.image import load_img, img_to_array
 from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
 from sklearn.model_selection import train_test_split, KFold
 from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import mean_squared_error, mean_absolute_error
+from sklearn.metrics import mean_squared_error, mean_absolute_error, precision_score, recall_score, f1_score
 
 from app.api import deps
 from app.models import child as child_model
 from app.models.stunting import ModelMetrics
 from app.schemas import stunting as stunting_schema
+from app.utils.prediction import predict_child_condition
 
 # Constants
 MODEL_DIR = "stunting-models"
@@ -245,27 +247,112 @@ def predict_height_weight(child_id: int, db: Session = Depends(deps.get_db)):
     if not child:
         raise HTTPException(status_code=404, detail="Child not found")
 
-    if not validate_images(child):
+    model = load_model(MODEL_PATH)
+    scaler = joblib.load(SCALER_PATH)
+
+    prediction = predict_child(child, model, scaler, db)
+    if prediction is None:
         raise HTTPException(status_code=400, detail="Child is missing one or more required images")
 
-    x_front, x_back, x_left, x_right, _ = load_and_preprocess_images([child])
+    db.commit()
+    return prediction
+
+@router.post("/predict-all", response_model=stunting_schema.PredictAllResponse)
+def predict_all(db: Session = Depends(deps.get_db)):
+    if not os.path.exists(MODEL_PATH) or not os.path.exists(SCALER_PATH):
+        raise HTTPException(status_code=400, detail="Model or scaler not found. Please train the model first.")
+
+    children = db.query(child_model.Child).all()
+    if not children:
+        raise HTTPException(status_code=404, detail="No children found in the database")
 
     model = load_model(MODEL_PATH)
     scaler = joblib.load(SCALER_PATH)
 
+    predictions = []
+    for child in children:
+        prediction = predict_child(child, model, scaler, db)
+        if prediction:
+            predictions.append(prediction)
+
+    db.commit()
+
+    return {
+        "total_predictions": len(predictions),
+        "predictions": predictions
+    }
+
+def predict_child(child: child_model.Child, model, scaler, db: Session) -> dict:
+    if not validate_images(child):
+        raise HTTPException(status_code=500, detail=f"child with name {child.name} image not complete")
+
+    x_front, x_back, x_left, x_right, _ = load_and_preprocess_images([child])
     scaled_prediction = model.predict([x_front, x_back, x_left, x_right])
     prediction = scaler.inverse_transform(scaled_prediction)
-
     predicted_height, predicted_weight = prediction[0]
 
-    logging.info(f"Prediction made for child ID {child_id}: Height: {predicted_height:.2f}, Weight: {predicted_weight:.2f}")
+    # Add prediction logic
+    child_condition = predict_child_condition(db, child)
+    predict_is_stunting = child_condition["is_stunting"]
+    predict_is_wasting = child_condition["is_wasting"]
+    predict_is_overweight = child_condition["is_overweight"]
+
+    # Update the child record with predictions
+    child.predict_height = float(predicted_height)
+    child.predict_weight = float(predicted_weight)
+    child.predict_stunting = predict_is_stunting
+    child.predict_wasting = predict_is_wasting
+    child.predict_overweight = predict_is_overweight
 
     return {
         "child_id": child.id,
         "actual_height": child.height,
         "actual_weight": child.weight,
-        "predicted_height": float(predicted_height),
-        "predicted_weight": float(predicted_weight)
+        "actual_stunting": child.is_stunting,
+        "predicted_height": child.predict_height,
+        "predicted_weight": child.predict_weight,
+        "predicted_stunting": child.predict_stunting,
+        "predicted_wasting": child.predict_wasting,
+        "predicted_overweight": child.predict_overweight,
+    }
+
+
+@router.get("/system-performance", response_model=stunting_schema.SystemPerformanceResponse)
+def calculate_system_performance(db: Session = Depends(deps.get_db)):
+    children = db.query(child_model.Child).all()
+
+    if not children:
+        raise HTTPException(status_code=404, detail="No children found in the database")
+
+    y_true = []
+    y_pred = []
+
+    for child in children:
+        if child.is_stunting is not None and child.predict_stunting is not None:
+            y_true.append(child.is_stunting)
+            y_pred.append(child.predict_stunting)
+
+    if not y_true or not y_pred:
+        raise HTTPException(status_code=400, detail="No valid predictions found")
+
+    precision = precision_score(y_true, y_pred)
+    recall = recall_score(y_true, y_pred)
+    f1 = f1_score(y_true, y_pred)
+
+    true_positives = sum(1 for t, p in zip(y_true, y_pred) if t and p)
+    false_positives = sum(1 for t, p in zip(y_true, y_pred) if not t and p)
+    true_negatives = sum(1 for t, p in zip(y_true, y_pred) if not t and not p)
+    false_negatives = sum(1 for t, p in zip(y_true, y_pred) if t and not p)
+
+    return {
+        "precision": precision,
+        "recall": recall,
+        "f1_score": f1,
+        "true_positives": true_positives,
+        "false_positives": false_positives,
+        "true_negatives": true_negatives,
+        "false_negatives": false_negatives,
+        "total_samples": len(y_true)
     }
 
 @router.post("/cross-validate", response_model=stunting_schema.CrossValidationResponse)
