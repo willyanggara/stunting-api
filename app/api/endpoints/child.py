@@ -1,18 +1,19 @@
+from typing import Optional
+
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Request, Query
+from pydantic import parse_obj_as
 from sqlalchemy import func
 from sqlalchemy.orm import Session
-from typing import List, Optional
 
-from app.models import child as child_model
-from app.schemas import child as child_schema
 from app.api import deps
+from app.models import child as child_model
+from app.schemas.child import Child, ChildBase, ChildWithImage, PaginatedChildren, SummaryChildren, \
+    PredictionChildResponse
 from app.utils.file_helper import save_file, remove_file
-from pydantic import parse_obj_as
-from app.core.config import settings
 
 router = APIRouter()
 
-@router.get("/summary", response_model=child_schema.SummaryChildren)
+@router.get("/summary", response_model=SummaryChildren)
 def get_summary(db: Session = Depends(deps.get_db)):
     total_data = db.query(child_model.Child).count()
     if total_data == 0:
@@ -52,7 +53,7 @@ def get_summary(db: Session = Depends(deps.get_db)):
     }
 
 
-@router.post("", response_model=child_schema.Child)
+@router.post("", response_model=Child)
 async def create_child(
     name: str = Form(...),
     gender: str = Form(...),
@@ -95,7 +96,7 @@ async def create_child(
         child_data["image_right_name"] = filepath
         child_data["image_right_original_name"] = image_right.filename
 
-    child = parse_obj_as(child_schema.ChildWithImage, child_data)
+    child = parse_obj_as(ChildWithImage, child_data)
     db_child = child_model.Child(**child.dict())
     db.add(db_child)
     db.commit()
@@ -103,7 +104,7 @@ async def create_child(
     return db_child
 
 
-@router.get("/{child_id}", response_model=child_schema.Child)
+@router.get("/{child_id}", response_model=Child)
 def get_child(child_id: int, request: Request, db: Session = Depends(deps.get_db)):
     db_child = db.query(child_model.Child).filter(child_model.Child.id == child_id).first()
     if db_child is None:
@@ -119,10 +120,24 @@ def get_child(child_id: int, request: Request, db: Session = Depends(deps.get_db
     if db_child.image_right_name:
         db_child.image_right_name = f"{base_url}static/child_images/{db_child.image_right_name}"
 
-    return db_child
+    child_data = Child.from_orm(db_child)
+    # Include prediction data if available
+    if db_child.predict_height is not None and db_child.predict_weight is not None:
+        child_data.prediction = PredictionChildResponse(
+            actual_height=float(db_child.height or 0),
+            actual_weight=float(db_child.weight or 0),
+            actual_stunting=bool(db_child.is_stunting or False),
+            predicted_height=float(db_child.predict_height or 0),
+            predicted_weight=float(db_child.predict_weight or 0),
+            predicted_stunting=bool(db_child.predict_stunting or False),
+            predicted_wasting=bool(db_child.predict_wasting or False),
+            predicted_overweight=bool(db_child.predict_overweight or False)
+        )
+
+    return child_data
 
 
-@router.get("", response_model=child_schema.PaginatedChildren)
+@router.get("", response_model=PaginatedChildren)
 def list_children(
         page: int = 1,
         page_size: int = 10,
@@ -162,8 +177,8 @@ def list_children(
     }
 
 
-@router.put("/{child_id}", response_model=child_schema.Child)
-def update_child(child_id: int, child: child_schema.ChildBase, db: Session = Depends(deps.get_db)):
+@router.put("/{child_id}", response_model=Child)
+def update_child(child_id: int, child: ChildBase, db: Session = Depends(deps.get_db)):
     db_child = db.query(child_model.Child).filter(child_model.Child.id == child_id).first()
     if db_child is None:
         raise HTTPException(status_code=404, detail="Child not found")
@@ -176,7 +191,7 @@ def update_child(child_id: int, child: child_schema.ChildBase, db: Session = Dep
     return db_child
 
 
-@router.delete("/{child_id}", response_model=child_schema.Child)
+@router.delete("/{child_id}", response_model=Child)
 def delete_child(child_id: int, db: Session = Depends(deps.get_db)):
     db_child = db.query(child_model.Child).filter(child_model.Child.id == child_id).first()
     if db_child is None:
@@ -184,35 +199,29 @@ def delete_child(child_id: int, db: Session = Depends(deps.get_db)):
 
     # Delete associated image files
     if db_child.image_front_name:
-        remove_file(db_child.image_front_name)
+        remove_file(str(db_child.image_front_name))
     if db_child.image_back_name:
-        remove_file(db_child.image_back_name)
+        remove_file(str(db_child.image_back_name))
     if db_child.image_left_name:
-        remove_file(db_child.image_left_name)
+        remove_file(str(db_child.image_left_name))
     if db_child.image_right_name:
-        remove_file(db_child.image_right_name)
+        remove_file(str(db_child.image_right_name))
 
     db.delete(db_child)
     db.commit()
     return db_child
 
 
-@router.post("/{child_id}/image/{image_type}", response_model=child_schema.Child)
+@router.post("/{child_id}/image/{image_type}", response_model=Child)
 async def add_child_image(
         child_id: int,
         image_type: str,
         image: UploadFile = File(...),
         db: Session = Depends(deps.get_db)
 ):
-    db_child = db.query(child_model.Child).filter(child_model.Child.id == child_id).first()
-    if db_child is None:
-        raise HTTPException(status_code=404, detail="Child not found")
-
-    if image_type not in ["front", "back", "left", "right"]:
-        raise HTTPException(status_code=400, detail="Invalid image type")
+    db_child = get_child_and_validate_image_type(child_id, image_type, db)
 
     image_name = getattr(db_child, f"image_{image_type}_name")
-
     filepath = save_file(image)
 
     setattr(db_child, f"image_{image_type}_name", filepath)
@@ -226,14 +235,9 @@ async def add_child_image(
     return db_child
 
 
-@router.delete("/{child_id}/image/{image_type}", response_model=child_schema.Child)
+@router.delete("/{child_id}/image/{image_type}", response_model=Child)
 def delete_image(child_id: int, image_type: str, db: Session = Depends(deps.get_db)):
-    db_child = db.query(child_model.Child).filter(child_model.Child.id == child_id).first()
-    if db_child is None:
-        raise HTTPException(status_code=404, detail="Child not found")
-
-    if image_type not in ["front", "back", "left", "right"]:
-        raise HTTPException(status_code=400, detail="Invalid image type")
+    db_child = get_child_and_validate_image_type(child_id, image_type, db)
 
     image_name = getattr(db_child, f"image_{image_type}_name")
     if image_name:
@@ -242,6 +246,16 @@ def delete_image(child_id: int, image_type: str, db: Session = Depends(deps.get_
         setattr(db_child, f"image_{image_type}_original_name", None)
         db.commit()
         db.refresh(db_child)
+
+    return db_child
+
+def get_child_and_validate_image_type(child_id: int, image_type: str, db: Session) -> child_model.Child:
+    db_child = db.query(child_model.Child).filter(child_model.Child.id == child_id).first()
+    if db_child is None:
+        raise HTTPException(status_code=404, detail="Child not found")
+
+    if image_type not in ["front", "back", "left", "right"]:
+        raise HTTPException(status_code=400, detail="Invalid image type")
 
     return db_child
 

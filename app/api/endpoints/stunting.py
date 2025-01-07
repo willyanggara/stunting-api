@@ -1,24 +1,21 @@
-import os
-import math
 import logging
+import os
 from datetime import datetime
-from typing import List
 
 import joblib
 import numpy as np
-import tensorflow as tf
 from fastapi import APIRouter, Depends, HTTPException
+from sklearn.metrics import mean_squared_error, mean_absolute_error, precision_score, recall_score, f1_score
+from sklearn.model_selection import train_test_split, KFold
+from sklearn.preprocessing import StandardScaler
 from sqlalchemy.orm import Session
 from tensorflow.keras.applications import MobileNetV2
+from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
+from tensorflow.keras.callbacks import ReduceLROnPlateau, EarlyStopping
 from tensorflow.keras.layers import Dense, GlobalAveragePooling2D, Concatenate, Input, Dropout
 from tensorflow.keras.models import Model, load_model
 from tensorflow.keras.optimizers import Adam
-from tensorflow.keras.callbacks import ReduceLROnPlateau, EarlyStopping
 from tensorflow.keras.preprocessing.image import load_img, img_to_array
-from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
-from sklearn.model_selection import train_test_split, KFold
-from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import mean_squared_error, mean_absolute_error, precision_score, recall_score, f1_score
 
 from app.api import deps
 from app.models import child as child_model

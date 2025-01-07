@@ -1,6 +1,6 @@
-from pydantic import BaseModel, Field
 from typing import Optional
-from .generic_response import GenericResponse
+from pydantic import BaseModel, Field
+
 
 class ChildBase(BaseModel):
     id: Optional[int] = None
@@ -21,8 +21,21 @@ class ChildWithImage(ChildBase):
     image_right_name: Optional[str] = None
     image_right_original_name: Optional[str] = None
 
+
+class PredictionChildResponse(BaseModel):
+    actual_height: float
+    actual_weight: float
+    actual_stunting: bool
+    predicted_height: float
+    predicted_weight: float
+    predicted_stunting: bool
+    predicted_wasting: bool
+    predicted_overweight: bool
+
+
 class Child(ChildWithImage):
     id: int
+    prediction: Optional[PredictionChildResponse] = None
 
     class Config:
         from_attributes = True
@@ -44,4 +57,3 @@ class SummaryChildren(BaseModel):
     average_height: Optional[float] = Field(None, ge=0)
     average_weight: Optional[float] = Field(None, ge=0)
     average_age: Optional[float] = Field(None, ge=0)
-

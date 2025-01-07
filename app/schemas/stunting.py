@@ -25,7 +25,6 @@ class CheckModelResponse(BaseModel):
     scaler_modified: Optional[datetime] = None
 
 class PredictionResponse(BaseModel):
-    child_id: int
     actual_height: float
     actual_weight: float
     actual_stunting: bool
