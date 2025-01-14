@@ -1,14 +1,7 @@
-from typing import Generator
-
-from fastapi import Depends, HTTPException, status
-from sqlalchemy.orm import Session
-
+from typing import AsyncGenerator
+from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import SessionLocal
 
-def get_db() -> Generator:
-    try:
-        db = SessionLocal()
+async def get_db() -> AsyncGenerator:
+    async with SessionLocal() as db:
         yield db
-    finally:
-        db.close()
-

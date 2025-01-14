@@ -17,12 +17,13 @@ class CrossValidationResponse(BaseModel):
     mean_rmse_height: float
     mean_rmse_weight: float
 
-class CheckModelResponse(BaseModel):
+class ModelResponse(BaseModel):
+    message: str
     model_exists: bool
     model_path: Optional[str] = None
-    model_modified: Optional[datetime] = None
+    model_modified: Optional[str] = None
     scaler_path: Optional[str] = None
-    scaler_modified: Optional[datetime] = None
+    scaler_modified: Optional[str] = None
 
 class PredictionResponse(BaseModel):
     actual_height: float
@@ -43,7 +44,7 @@ class ModelMetrics(BaseModel):
     mae_weight: float
     rmse_height: float
     rmse_weight: float
-    created_at: datetime
+    created_at: str
 
 class EvaluationResponse(BaseModel):
     value: bool

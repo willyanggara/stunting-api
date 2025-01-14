@@ -1,55 +1,45 @@
+import asyncio
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Request, Query
 from pydantic import parse_obj_as
-from sqlalchemy import func
+from sqlalchemy import func, case, select
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from app.api import deps
 from app.models import child as child_model
 from app.schemas.child import Child, ChildBase, ChildWithImage, PaginatedChildren, SummaryChildren, \
     PredictionChildResponse
-from app.utils.file_helper import save_file, remove_file
+from app.utils.file_helper import save_file_async, remove_file_async
 
 router = APIRouter()
 
 @router.get("/summary", response_model=SummaryChildren)
-def get_summary(db: Session = Depends(deps.get_db)):
-    total_data = db.query(child_model.Child).count()
-    if total_data == 0:
-        return {
-            "total_data": 0,
-            "total_stunting": 0,
-            "total_not_stunting": 0,
-            "total_male": 0,
-            "total_female": 0,
-            "average_height": 0,
-            "average_weight": 0,
-            "average_age": 0,
-        }
+async def get_summary(db: AsyncSession = Depends(deps.get_db)):
+    query = select(
+        func.count(child_model.Child.id).label("total_data"),
+        func.sum(case((child_model.Child.is_stunting == True, 1), else_=0)).label("total_stunting"),
+        func.sum(case((child_model.Child.is_stunting == False, 1), else_=0)).label("total_not_stunting"),
+        func.sum(case((child_model.Child.gender == "Male", 1), else_=0)).label("total_male"),
+        func.sum(case((child_model.Child.gender == "Female", 1), else_=0)).label("total_female"),
+        func.avg(child_model.Child.height).label("average_height"),
+        func.avg(child_model.Child.weight).label("average_weight"),
+        func.avg(child_model.Child.age).label("average_age"),
+    )
 
-    total_stunting = db.query(func.count()).filter(child_model.Child.is_stunting == True).scalar()
-    total_not_stunting = db.query(func.count()).filter(child_model.Child.is_stunting == False).scalar()
-    total_male = db.query(func.count()).filter(child_model.Child.gender == "Male").scalar()
-    total_female = db.query(func.count()).filter(child_model.Child.gender == "Female").scalar()
-
-    average_height = db.query(func.avg(child_model.Child.height)).scalar()
-    average_weight = db.query(func.avg(child_model.Child.weight)).scalar()
-    average_age = db.query(func.avg(child_model.Child.age)).scalar()
-
-    average_height = round(float(average_height), 2) if average_height is not None else 0.0
-    average_weight = round(float(average_weight), 2) if average_weight is not None else 0.0
-    average_age = round(float(average_age), 2) if average_age is not None else 0.0
+    result = await db.execute(query)
+    metrics = result.one()
 
     return {
-        "total_data": total_data,
-        "total_stunting": total_stunting,
-        "total_not_stunting": total_not_stunting,
-        "total_male": total_male,
-        "total_female": total_female,
-        "average_height": average_height,
-        "average_weight": average_weight,
-        "average_age": average_age,
+        "total_data": metrics.total_data or 0,
+        "total_stunting": metrics.total_stunting or 0,
+        "total_not_stunting": metrics.total_not_stunting or 0,
+        "total_male": metrics.total_male or 0,
+        "total_female": metrics.total_female or 0,
+        "average_height": round(metrics.average_height, 2) if metrics.average_height else 0.0,
+        "average_weight": round(metrics.average_weight, 2) if metrics.average_weight else 0.0,
+        "average_age": round(metrics.average_age, 2) if metrics.average_age else 0.0,
     }
 
 
@@ -65,7 +55,7 @@ async def create_child(
     image_back: Optional[UploadFile] = File(None),
     image_left: Optional[UploadFile] = File(None),
     image_right: Optional[UploadFile] = File(None),
-    db: Session = Depends(deps.get_db)
+    db: AsyncSession = Depends(deps.get_db)  # Use AsyncSession
 ):
     child_data = {
         "name": name,
@@ -77,36 +67,37 @@ async def create_child(
     }
 
     if image_front:
-        filepath = save_file(image_front)
+        filepath = save_file_async(image_front)
         child_data["image_front_name"] = filepath
         child_data["image_front_original_name"] = image_front.filename
 
     if image_back:
-        filepath = save_file(image_back)
+        filepath = save_file_async(image_back)
         child_data["image_back_name"] = filepath
         child_data["image_back_original_name"] = image_back.filename
 
     if image_left:
-        filepath = save_file(image_left)
+        filepath = save_file_async(image_left)
         child_data["image_left_name"] = filepath
         child_data["image_left_original_name"] = image_left.filename
 
     if image_right:
-        filepath = save_file(image_right)
+        filepath = save_file_async(image_right)
         child_data["image_right_name"] = filepath
         child_data["image_right_original_name"] = image_right.filename
 
     child = parse_obj_as(ChildWithImage, child_data)
     db_child = child_model.Child(**child.dict())
     db.add(db_child)
-    db.commit()
-    db.refresh(db_child)
+    await db.commit()  # Use async commit
+    await db.refresh(db_child)  # Use async refresh
     return db_child
 
 
 @router.get("/{child_id}", response_model=Child)
-def get_child(child_id: int, request: Request, db: Session = Depends(deps.get_db)):
-    db_child = db.query(child_model.Child).filter(child_model.Child.id == child_id).first()
+async def get_child(child_id: int, request: Request, db: AsyncSession = Depends(deps.get_db)):
+    db_child = await db.execute(select(child_model.Child).filter(child_model.Child.id == child_id))
+    db_child = db_child.scalars().first()
     if db_child is None:
         raise HTTPException(status_code=404, detail="Child not found")
 
@@ -138,31 +129,32 @@ def get_child(child_id: int, request: Request, db: Session = Depends(deps.get_db
 
 
 @router.get("", response_model=PaginatedChildren)
-def list_children(
+async def list_children(
         page: int = 1,
         page_size: int = 10,
         search: str = Query(None, description="Search for child name"),
-        db: Session = Depends(deps.get_db)
+        db: AsyncSession = Depends(deps.get_db)
 ):
     if page < 1 or page_size < 1:
         raise HTTPException(status_code=400, detail="Page and page_size must be greater than 0")
 
-    query = db.query(child_model.Child)
+    query = select(child_model.Child)
 
     if search:
         query = query.filter(child_model.Child.name.ilike(f"%{search}%"))
 
-    total_data = query.count()
+    query = query.order_by(child_model.Child.id.desc())
+    result = await db.execute(query)
+    children = result.scalars().all()
+
+    total_data = len(children)
     total_page = (total_data + page_size - 1) // page_size
 
     offset = (page - 1) * page_size
     if offset >= total_data > 0:
         raise HTTPException(status_code=404, detail="Page out of range")
 
-    items = (query.order_by(child_model.Child.id)
-             .offset(offset)
-             .limit(page_size)
-             .all())
+    items = children[offset:offset + page_size]
 
     prev_page = page - 1 if page > 1 else 0
     next_page = page + 1 if page < total_page else 0
@@ -178,37 +170,51 @@ def list_children(
 
 
 @router.put("/{child_id}", response_model=Child)
-def update_child(child_id: int, child: ChildBase, db: Session = Depends(deps.get_db)):
-    db_child = db.query(child_model.Child).filter(child_model.Child.id == child_id).first()
+async def update_child(child_id: int, child: ChildBase, db: AsyncSession = Depends(deps.get_db)):
+    db_child = await db.execute(select(child_model.Child).filter(child_model.Child.id == child_id))
+    db_child = db_child.scalars().first()
+
     if db_child is None:
         raise HTTPException(status_code=404, detail="Child not found")
 
     for key, value in child.dict(exclude_unset=True).items():
         setattr(db_child, key, value)
 
-    db.commit()
-    db.refresh(db_child)
+    await db.commit()
+    await db.refresh(db_child)
+
     return db_child
 
 
+
 @router.delete("/{child_id}", response_model=Child)
-def delete_child(child_id: int, db: Session = Depends(deps.get_db)):
-    db_child = db.query(child_model.Child).filter(child_model.Child.id == child_id).first()
+async def delete_child(child_id: int, db: AsyncSession = Depends(deps.get_db)):
+    # Use async query to fetch the child
+    db_child = await db.execute(select(child_model.Child).filter(child_model.Child.id == child_id))
+    db_child = db_child.scalars().first()
+
     if db_child is None:
         raise HTTPException(status_code=404, detail="Child not found")
 
-    # Delete associated image files
+    # Delete associated image files asynchronously
+    image_removal_tasks = []
     if db_child.image_front_name:
-        remove_file(str(db_child.image_front_name))
+        image_removal_tasks.append(remove_file_async(str(db_child.image_front_name)))
     if db_child.image_back_name:
-        remove_file(str(db_child.image_back_name))
+        image_removal_tasks.append(remove_file_async(str(db_child.image_back_name)))
     if db_child.image_left_name:
-        remove_file(str(db_child.image_left_name))
+        image_removal_tasks.append(remove_file_async(str(db_child.image_left_name)))
     if db_child.image_right_name:
-        remove_file(str(db_child.image_right_name))
+        image_removal_tasks.append(remove_file_async(str(db_child.image_right_name)))
 
-    db.delete(db_child)
-    db.commit()
+    # Run all image removal tasks concurrently
+    if image_removal_tasks:
+        await asyncio.gather(*image_removal_tasks)
+
+    # Delete the child record asynchronously
+    await db.delete(db_child)
+    await db.commit()
+
     return db_child
 
 
@@ -217,40 +223,47 @@ async def add_child_image(
         child_id: int,
         image_type: str,
         image: UploadFile = File(...),
-        db: Session = Depends(deps.get_db)
+        db: AsyncSession = Depends(deps.get_db)
 ):
-    db_child = get_child_and_validate_image_type(child_id, image_type, db)
+    db_child = await get_child_and_validate_image_type(child_id, image_type, db)
 
+    # Asynchronously save the image
     image_name = getattr(db_child, f"image_{image_type}_name")
-    filepath = save_file(image)
+    filepath = await save_file_async(image)
 
     setattr(db_child, f"image_{image_type}_name", filepath)
     setattr(db_child, f"image_{image_type}_original_name", image.filename)
 
+    # If an image already exists, schedule its removal asynchronously
     if image_name:
-        remove_file(image_name)
+        # Use asyncio.create_task to remove the file asynchronously without blocking
+        asyncio.create_task(remove_file_async(image_name))
 
-    db.commit()
-    db.refresh(db_child)
+    await db.commit()
+    await db.refresh(db_child)
     return db_child
 
 
 @router.delete("/{child_id}/image/{image_type}", response_model=Child)
-def delete_image(child_id: int, image_type: str, db: Session = Depends(deps.get_db)):
-    db_child = get_child_and_validate_image_type(child_id, image_type, db)
+async def delete_image(child_id: int, image_type: str, db: AsyncSession = Depends(deps.get_db)):
+    db_child = await get_child_and_validate_image_type(child_id, image_type, db)
 
     image_name = getattr(db_child, f"image_{image_type}_name")
     if image_name:
-        remove_file(image_name)
+        # Use asyncio.create_task to remove the file asynchronously without blocking
+        asyncio.create_task(remove_file_async(image_name))
         setattr(db_child, f"image_{image_type}_name", None)
         setattr(db_child, f"image_{image_type}_original_name", None)
-        db.commit()
-        db.refresh(db_child)
+        await db.commit()
+        await db.refresh(db_child)
 
     return db_child
 
-def get_child_and_validate_image_type(child_id: int, image_type: str, db: Session) -> child_model.Child:
-    db_child = db.query(child_model.Child).filter(child_model.Child.id == child_id).first()
+async def get_child_and_validate_image_type(child_id: int, image_type: str, db: AsyncSession) -> child_model.Child:
+    # Use async select to query the child in the database
+    result = await db.execute(select(child_model.Child).filter(child_model.Child.id == child_id))
+    db_child = result.scalars().first()
+
     if db_child is None:
         raise HTTPException(status_code=404, detail="Child not found")
 

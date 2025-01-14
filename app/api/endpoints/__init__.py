@@ -1,2 +1,2 @@
-from app.api.endpoints import stunting
+from app.api.endpoints import stunting, child
 
