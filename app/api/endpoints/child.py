@@ -15,6 +15,7 @@ from app.utils.file_helper import save_file_async, remove_file_async
 
 router = APIRouter()
 
+
 @router.get("/summary", response_model=SummaryChildren)
 async def get_summary(db: AsyncSession = Depends(deps.get_db)):
     query = select(
@@ -45,17 +46,17 @@ async def get_summary(db: AsyncSession = Depends(deps.get_db)):
 
 @router.post("", response_model=Child)
 async def create_child(
-    name: str = Form(...),
-    gender: str = Form(...),
-    height: float = Form(...),
-    weight: float = Form(...),
-    age: Optional[int] = Form(None),
-    is_stunting: bool = Form(...),
-    image_front: Optional[UploadFile] = File(None),
-    image_back: Optional[UploadFile] = File(None),
-    image_left: Optional[UploadFile] = File(None),
-    image_right: Optional[UploadFile] = File(None),
-    db: AsyncSession = Depends(deps.get_db)  # Use AsyncSession
+        name: str = Form(...),
+        gender: str = Form(...),
+        height: float = Form(...),
+        weight: float = Form(...),
+        age: Optional[int] = Form(None),
+        is_stunting: bool = Form(...),
+        image_front: Optional[UploadFile] = File(None),
+        image_back: Optional[UploadFile] = File(None),
+        image_left: Optional[UploadFile] = File(None),
+        image_right: Optional[UploadFile] = File(None),
+        db: AsyncSession = Depends(deps.get_db)  # Use AsyncSession
 ):
     child_data = {
         "name": name,
@@ -67,22 +68,22 @@ async def create_child(
     }
 
     if image_front:
-        filepath = save_file_async(image_front)
+        filepath = await save_file_async(image_front)
         child_data["image_front_name"] = filepath
         child_data["image_front_original_name"] = image_front.filename
 
     if image_back:
-        filepath = save_file_async(image_back)
+        filepath = await save_file_async(image_back)
         child_data["image_back_name"] = filepath
         child_data["image_back_original_name"] = image_back.filename
 
     if image_left:
-        filepath = save_file_async(image_left)
+        filepath = await save_file_async(image_left)
         child_data["image_left_name"] = filepath
         child_data["image_left_original_name"] = image_left.filename
 
     if image_right:
-        filepath = save_file_async(image_right)
+        filepath = await save_file_async(image_right)
         child_data["image_right_name"] = filepath
         child_data["image_right_original_name"] = image_right.filename
 
@@ -186,7 +187,6 @@ async def update_child(child_id: int, child: ChildBase, db: AsyncSession = Depen
     return db_child
 
 
-
 @router.delete("/{child_id}", response_model=Child)
 async def delete_child(child_id: int, db: AsyncSession = Depends(deps.get_db)):
     # Use async query to fetch the child
@@ -259,6 +259,7 @@ async def delete_image(child_id: int, image_type: str, db: AsyncSession = Depend
 
     return db_child
 
+
 async def get_child_and_validate_image_type(child_id: int, image_type: str, db: AsyncSession) -> child_model.Child:
     # Use async select to query the child in the database
     result = await db.execute(select(child_model.Child).filter(child_model.Child.id == child_id))
@@ -271,4 +272,3 @@ async def get_child_and_validate_image_type(child_id: int, image_type: str, db: 
         raise HTTPException(status_code=400, detail="Invalid image type")
 
     return db_child
-

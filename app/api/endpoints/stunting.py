@@ -30,9 +30,9 @@ from app.utils.prediction import predict_child_condition
 MODEL_DIR = "stunting-models"
 MODEL_PATH = os.path.join(MODEL_DIR, "stunting_model.h5")
 SCALER_PATH = os.path.join(MODEL_DIR, "scaler.joblib")
-IMAGE_SIZE = (224, 224) #reduce pixel image
+IMAGE_SIZE = (224, 224)  # reduce pixel image
 BATCH_SIZE = 16
-EPOCHS = 2
+EPOCHS = 100
 K_FOLD = 2
 
 # Set up logging
@@ -162,7 +162,7 @@ async def train_stunting_model(db: AsyncSession = Depends(deps.get_db)):
     try:
         success = await train_model(db)
         model_path, model_modified, scaler_path, scaler_modified = await check_model_scaler_existence(MODEL_PATH,
-                                                                                                SCALER_PATH)
+                                                                                                      SCALER_PATH)
         return {
             "message": "Model trained successfully and saved" if success else "Model training failed",
             "model_exists": model_path != "",
@@ -177,7 +177,8 @@ async def train_stunting_model(db: AsyncSession = Depends(deps.get_db)):
 
 @router.get("/check-model", response_model=stunting_schema.ModelResponse)
 async def check_model_exists():
-    model_path, model_modified, scaler_path, scaler_modified = await check_model_scaler_existence(MODEL_PATH, SCALER_PATH)
+    model_path, model_modified, scaler_path, scaler_modified = await check_model_scaler_existence(MODEL_PATH,
+                                                                                                  SCALER_PATH)
     return {
         "message": "Model Exist" if model_path != "" else "Model Not found",
         "model_exists": model_path != "",
@@ -187,16 +188,20 @@ async def check_model_exists():
         "scaler_modified": scaler_modified
     }
 
+
 async def check_model_scaler_existence(model_path: str, scaler_path: str):
     model_exists = await asyncio.to_thread(os.path.exists, model_path)
     scaler_exists = await asyncio.to_thread(os.path.exists, scaler_path)
 
     if model_exists and scaler_exists:
-        model_modified = datetime.fromtimestamp(await asyncio.to_thread(os.path.getmtime, model_path)).strftime("%d %B %Y, %H:%M")
-        scaler_modified = datetime.fromtimestamp(await asyncio.to_thread(os.path.getmtime, scaler_path)).strftime("%d %B %Y, %H:%M")
+        model_modified = datetime.fromtimestamp(await asyncio.to_thread(os.path.getmtime, model_path)).strftime(
+            "%d %B %Y, %H:%M")
+        scaler_modified = datetime.fromtimestamp(await asyncio.to_thread(os.path.getmtime, scaler_path)).strftime(
+            "%d %B %Y, %H:%M")
         return model_path, model_modified, scaler_path, scaler_modified
 
     return "", "", "", ""
+
 
 @router.get("/evaluate-model", response_model=stunting_schema.ModelMetrics)
 async def evaluate_stunting_model(db: AsyncSession = Depends(deps.get_db)):
@@ -213,6 +218,7 @@ async def evaluate_stunting_model(db: AsyncSession = Depends(deps.get_db)):
         return metrics
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 async def evaluate_model(db: AsyncSession) -> dict[str, datetime | Any]:
     if not os.path.exists(MODEL_PATH) or not os.path.exists(SCALER_PATH):
@@ -247,6 +253,7 @@ async def evaluate_model(db: AsyncSession) -> dict[str, datetime | Any]:
         "created_at": datetime.now()
     }
 
+
 @router.get("/get-metrics", response_model=stunting_schema.ModelMetrics)
 async def get_metrics(db: AsyncSession = Depends(deps.get_db)):
     metrics = await db.execute(select(ModelMetrics).order_by(ModelMetrics.created_at.desc()))
@@ -262,6 +269,7 @@ async def get_metrics(db: AsyncSession = Depends(deps.get_db)):
         "rmse_weight": metrics.rmse_weight,
         "created_at": formatted_created_metric
     }
+
 
 @router.post("/predict", response_model=stunting_schema.PredictionResponse)
 async def predict_height_weight(child_id: int, db: AsyncSession = Depends(deps.get_db)):
@@ -282,6 +290,7 @@ async def predict_height_weight(child_id: int, db: AsyncSession = Depends(deps.g
 
     await db.commit()
     return prediction
+
 
 @router.post("/predict-all", response_model=stunting_schema.SystemPerformanceResponse)
 async def predict_all(db: AsyncSession = Depends(deps.get_db)):
@@ -311,6 +320,7 @@ async def predict_all(db: AsyncSession = Depends(deps.get_db)):
 
     return await calculate_performance(y_true, y_pred)
 
+
 async def predict_child(child: child_model.Child, model, scaler, db: AsyncSession) -> dict:
     if not await validate_images(child):
         raise HTTPException(status_code=500, detail=f"child with name {child.name} image not complete")
@@ -327,8 +337,8 @@ async def predict_child(child: child_model.Child, model, scaler, db: AsyncSessio
     predict_is_overweight = child_condition["is_overweight"]
 
     # Update the child record with predictions
-    child.predict_height = float(predicted_height)
-    child.predict_weight = float(predicted_weight)
+    child.predict_height = round(float(predicted_height), 2)
+    child.predict_weight = round(float(predicted_weight), 2)
     child.predict_stunting = predict_is_stunting
     child.predict_wasting = predict_is_wasting
     child.predict_overweight = predict_is_overweight
@@ -344,6 +354,7 @@ async def predict_child(child: child_model.Child, model, scaler, db: AsyncSessio
         "predicted_wasting": child.predict_wasting,
         "predicted_overweight": child.predict_overweight,
     }
+
 
 @router.get("/system-performance", response_model=stunting_schema.SystemPerformanceResponse)
 async def calculate_system_performance(db: AsyncSession = Depends(deps.get_db)):
@@ -367,6 +378,7 @@ async def calculate_system_performance(db: AsyncSession = Depends(deps.get_db)):
 
     return await calculate_performance(y_true, y_pred)
 
+
 async def calculate_performance_metrics(y_true, y_pred):
     precision = round(await asyncio.to_thread(precision_score, y_true, y_pred), 2)
     recall = round(await asyncio.to_thread(recall_score, y_true, y_pred), 2)
@@ -375,17 +387,25 @@ async def calculate_performance_metrics(y_true, y_pred):
 
 
 async def calculate_performance_confusion_matrix(y_true, y_pred):
-    true_positives = sum(1 for t, p in zip(y_true, y_pred) if t and p)
-    false_positives = sum(1 for t, p in zip(y_true, y_pred) if not t and p)
-    true_negatives = sum(1 for t, p in zip(y_true, y_pred) if not t and not p)
-    false_negatives = sum(1 for t, p in zip(y_true, y_pred) if t and not p)
+    true_positives = false_positives = true_negatives = false_negatives = 0
+
+    for t, p in zip(y_true, y_pred):
+        if t and p:
+            true_positives += 1
+        elif not t and p:
+            false_positives += 1
+        elif not t and not p:
+            true_negatives += 1
+        elif t and not p:
+            false_negatives += 1
 
     return true_positives, false_positives, true_negatives, false_negatives
 
 
 async def calculate_performance(y_true, y_pred) -> stunting_schema.SystemPerformanceResponse:
     precision, recall, f1 = await calculate_performance_metrics(y_true, y_pred)
-    true_positives, false_positives, true_negatives, false_negatives = await calculate_performance_confusion_matrix(y_true, y_pred)
+    true_positives, false_positives, true_negatives, false_negatives = await calculate_performance_confusion_matrix(
+        y_true, y_pred)
 
     data = {
         "precision": precision,
