@@ -5,7 +5,6 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, R
 from pydantic import parse_obj_as
 from sqlalchemy import func, case, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import Session
 
 from app.api import deps
 from app.models import child as child_model

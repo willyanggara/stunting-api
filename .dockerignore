@@ -1,0 +1,30 @@
+# Mengabaikan virtual environment
+.venv/
+
+# Mengabaikan file cache Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Mengabaikan file sistem atau file sementara
+*.log
+*.env
+
+# Mengabaikan direktori git
+.git/
+
+# Mengabaikan file konfigurasi IDE (misalnya PyCharm, VS Code)
+.idea/
+.vscode/
+
+# Mengabaikan file build atau distribusi
+*.egg
+*.egg-info
+dist/
+build/
+
+# Mengabaikan folder static jika berisi file sementara atau cache
+static/
+
+# Mengabaikan folder model jika model dapat diunduh atau dihasilkan di container
+stunting-models/

@@ -12,13 +12,13 @@ from sklearn.model_selection import train_test_split, KFold
 from sklearn.preprocessing import StandardScaler
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from tensorflow.keras.applications import MobileNetV2
-from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
-from tensorflow.keras.callbacks import ReduceLROnPlateau, EarlyStopping
-from tensorflow.keras.layers import Dense, GlobalAveragePooling2D, Concatenate, Input, Dropout
-from tensorflow.keras.models import Model, load_model
-from tensorflow.keras.optimizers import Adam
-from tensorflow.keras.preprocessing.image import load_img, img_to_array
+from keras.api.applications.mobilenet_v2 import MobileNetV2
+from keras.api.applications.mobilenet_v2 import preprocess_input
+from keras.api.callbacks import ReduceLROnPlateau, EarlyStopping
+from keras.api.layers import Dense, GlobalAveragePooling2D, Concatenate, Input, Dropout
+from keras.api.models import Model, load_model
+from keras.api.optimizers import Adam
+from keras.api.preprocessing.image import load_img, img_to_array
 
 from app.api import deps
 from app.models import child as child_model
@@ -28,7 +28,7 @@ from app.utils.prediction import predict_child_condition
 
 # Constants
 MODEL_DIR = "stunting-models"
-MODEL_PATH = os.path.join(MODEL_DIR, "stunting_model.h5")
+MODEL_PATH = os.path.join(MODEL_DIR, "stunting_model.keras")
 SCALER_PATH = os.path.join(MODEL_DIR, "scaler.joblib")
 IMAGE_SIZE = (224, 224)  # reduce pixel image
 BATCH_SIZE = 16
@@ -177,8 +177,7 @@ async def train_stunting_model(db: AsyncSession = Depends(deps.get_db)):
 
 @router.get("/check-model", response_model=stunting_schema.ModelResponse)
 async def check_model_exists():
-    model_path, model_modified, scaler_path, scaler_modified = await check_model_scaler_existence(MODEL_PATH,
-                                                                                                  SCALER_PATH)
+    model_path, model_modified, scaler_path, scaler_modified = await check_model_scaler_existence(MODEL_PATH, SCALER_PATH)
     return {
         "message": "Model Exist" if model_path != "" else "Model Not found",
         "model_exists": model_path != "",

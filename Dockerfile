@@ -1,27 +1,36 @@
-# Gunakan base image Python yang sesuai
-FROM python:3.12-slim
+FROM
+#--platform=linux/amd64
+python:3.10-slim
 
-# Tentukan direktori kerja
 WORKDIR /app
 
-# Salin semua file ke dalam container
-COPY . /app
-
-# Install dependencies sistem yang diperlukan
+# Install necessary system dependencies
 RUN apt-get update && apt-get install -y \
-    libmariadb-dev-compat \
-    libmariadb-dev \
-    pkg-config \
+    build-essential \
+    libssl-dev \
+    libffi-dev \
+    python3-dev \
+    gfortran \
+    libopenblas-dev \
+    liblapack-dev \
+    && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Buat dan aktifkan virtual environment
-RUN python -m venv /opt/venv
 
-# Aktifkan virtual environment dan install dependencies Python
-RUN . /opt/venv/bin/activate && pip install --upgrade pip && pip install -r requirements.txt
+COPY requirements.txt /app/
 
-# Ekspos port aplikasi (opsional)
-EXPOSE 8000
+# Upgrade pip and install Python dependencies
+RUN pip install --upgrade pip setuptools wheel
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Tentukan perintah default
+COPY . /app/
+
+EXPOSE 5000
+
 CMD ["python", "app.py"]
+
+#FROM python:alpine3.17
+#WORKDIR /app
+#COPY . /app
+#RUN pip install -r requirements.txt
+#ENTRYPOINT ["python", "app.py"]
