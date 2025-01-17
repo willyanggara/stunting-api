@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.endpoints import child
 from app.core.config import settings
-from app.api.endpoints import stunting # Import stunting router
+from app.api.endpoints import stunting
 
 app = FastAPI(title="Stunting Detection API")
 
