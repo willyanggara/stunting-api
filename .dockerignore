@@ -24,7 +24,7 @@ dist/
 build/
 
 # Mengabaikan folder static jika berisi file sementara atau cache
-static/
+#static/
 
 # Mengabaikan folder model jika model dapat diunduh atau dihasilkan di container
-stunting-models/
+#stunting-models/
