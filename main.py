@@ -1,5 +1,6 @@
 import os
 
+import uvicorn
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -27,3 +28,8 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 # Include API routes
 app.include_router(child.router, prefix=f"{settings.API_V1_STR}/children", tags=["children"])
 app.include_router(stunting.router, prefix=f"{settings.API_V1_STR}/stunting", tags=["stunting"])
+
+if __name__ == "__main__":
+    host = os.getenv("HOST", "0.0.0.0")  # Default to 0.0.0.0 if not set
+    port = int(os.getenv("PORT", 5000))  # Default to 5000 if not set
+    uvicorn.run(app, host=host, port=port)
