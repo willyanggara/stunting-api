@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# Environment variables
+.env
+# IDE specific files
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# Static files
+static/images/*
+!static/images/.gitkeep
+
+*.so
+/static/child_images/*
+stunting-models
