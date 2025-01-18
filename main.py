@@ -23,11 +23,6 @@ app.add_middleware(
     allow_headers=["*"]
 )
 
-
-@app.get("/")
-def read_root():
-    return {"message": "Hello World"}
-
 # Mount static files
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
@@ -35,13 +30,13 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 app.include_router(child.router, prefix=f"{settings.API_V1_STR}/children", tags=["children"])
 app.include_router(stunting.router, prefix=f"{settings.API_V1_STR}/stunting", tags=["stunting"])
 
-if __name__ == "__main__":
-    # Get the host and port from environment variables, default to 0.0.0.0 and 8000
-    host = os.getenv("HOST", "0.0.0.0")  # If the environment variable is not set, use "0.0.0.0"
-    port = int(os.getenv("PORT", 8080))  # Default to 8080, which is commonly used in Railway deployments
-
-    # Log the details
-    logger.info(f"Starting application at http://{host}:{port}")
-
-    # Run Uvicorn
-    uvicorn.run(app, host=host, port=port, log_level="info")
+# if __name__ == "__main__":
+#     # Get the host and port from environment variables, default to 0.0.0.0 and 8000
+#     host = os.getenv("HOST", "0.0.0.0")  # If the environment variable is not set, use "0.0.0.0"
+#     port = int(os.getenv("PORT", 8080))  # Default to 8080, which is commonly used in Railway deployments
+#
+#     # Log the details
+#     logger.info(f"Starting application at http://{host}:{port}")
+#
+#     # Run Uvicorn
+#     uvicorn.run(app, host=host, port=port, log_level="info")
