@@ -36,7 +36,7 @@ app.include_router(stunting.router, prefix=f"{settings.API_V1_STR}/stunting", ta
 #     port = int(os.getenv("PORT", 8080))  # Default to 8080, which is commonly used in Railway deployments
 #
 #     # Log the details
-#     logger.info(f"Starting application at http://{host}:{port}")
+#     logger.info(f"Starting application at {host}:{port}")
 #
 #     # Run Uvicorn
 #     uvicorn.run(app, host=host, port=port, log_level="info")

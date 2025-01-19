@@ -30,7 +30,7 @@ COPY . /app/
 RUN mkdir -p /app/static
 
 # Expose port
-EXPOSE 5000
+EXPOSE 8080
 
-# Jalankan aplikasi
-CMD ["python", "main.py"]
+# Jalankan aplikasi menggunakan Uvicorn
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080", "--log-level", "info"]
