@@ -1,4 +1,5 @@
 import asyncio
+import os
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Request, Query
@@ -14,6 +15,20 @@ from app.utils.file_helper import save_file_async, remove_file_async
 
 router = APIRouter()
 
+@router.get("/list-static-files")
+def list_static_files():
+    files = os.listdir("/app/static")
+    return {"files": files}
+
+@router.get("/list-child-files")
+def list_child_files():
+    files = os.listdir("/app/static/child_images")
+    return {"files": files}
+
+@router.get("/list-child2-files")
+def list_child2_files():
+    files = os.listdir("static/child_images")
+    return {"files": files}
 
 @router.get("/summary", response_model=SummaryChildren)
 async def get_summary(db: AsyncSession = Depends(deps.get_db)):

@@ -1,11 +1,11 @@
-# Gunakan image Python
-FROM python:3.10-slim
+# Use a smaller base image to save space
+FROM python:3.10-slim-buster
 
 # Set working directory
 WORKDIR /app
 
-# Install dependencies
-RUN apt-get update && apt-get install -y \
+# Minimize apt-get installations
+RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     libssl-dev \
     libffi-dev \
@@ -16,21 +16,21 @@ RUN apt-get update && apt-get install -y \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Salin file requirements
+# Copy only requirements to leverage Docker caching
 COPY requirements.txt /app/
 
-# Upgrade pip and install Python dependencies
-RUN pip install --upgrade pip setuptools wheel
+# Upgrade pip and install dependencies
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Salin semua file aplikasi, termasuk .env
+# Copy application code
 COPY . /app/
 
-# Buat folder /static jika tidak ada
+# Create the static folder
 RUN mkdir -p /app/static
 
 # Expose port
 EXPOSE 8080
 
-# Jalankan aplikasi menggunakan Uvicorn
+# Command to run the application
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080", "--log-level", "info"]
