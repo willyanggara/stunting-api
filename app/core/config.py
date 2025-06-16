@@ -5,6 +5,8 @@ class Settings(BaseSettings):
     API_V1_STR: str = "/api"
     TF_CPP_MIN_LOG_LEVEL: str = "2"
     TF_ENABLE_ONEDNN_OPTS: str = "0"
+    HOST: str = "0.0.0.0"
+    PORT: int = 5000 
 
     class Config:
         env_file = ".env"
