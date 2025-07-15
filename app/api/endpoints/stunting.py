@@ -7,7 +7,7 @@ from typing import Any
 import joblib
 import numpy as np
 from fastapi import APIRouter, Depends, HTTPException
-from sklearn.metrics import mean_squared_error, mean_absolute_error, precision_score, recall_score, f1_score
+from sklearn.metrics import confusion_matrix, mean_squared_error, mean_absolute_error, precision_score, recall_score, f1_score, accuracy_score
 from sklearn.model_selection import train_test_split, KFold
 from sklearn.preprocessing import StandardScaler
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -42,79 +42,58 @@ router = APIRouter()
 
 
 async def load_and_preprocess_images(children, config: stunting_schema.TrainingConfig):
-    x_front, x_back, x_left, x_right, y = [], [], [], [], []
+    all_images = []
+    y = []
     
     for child in children:
-        valid = True
-        # Cek hanya gambar yang diperlukan berdasarkan config
-        if config.use_front and not child.image_front_name:
-            valid = False
-        if config.use_back and not child.image_back_name:
-            valid = False
-        if config.use_left and not child.image_left_name:
-            valid = False
-        if config.use_right and not child.image_right_name:
-            valid = False
+        images = []
+        valid = False
+        
+        # Kumpulkan semua gambar yang tersedia dan aktif dalam config
+        if config.use_front and child.image_front_name:
+            images.append(await preprocess_image(os.path.join("static", "child_images", child.image_front_name)))
+            valid = True
+        if config.use_back and child.image_back_name:
+            images.append(await preprocess_image(os.path.join("static", "child_images", child.image_back_name)))
+            valid = True
+        if config.use_left and child.image_left_name:
+            images.append(await preprocess_image(os.path.join("static", "child_images", child.image_left_name)))
+            valid = True
+        if config.use_right and child.image_right_name:
+            images.append(await preprocess_image(os.path.join("static", "child_images", child.image_right_name)))
+            valid = True
             
         if valid:
-            if config.use_front:
-                x_front.append(await preprocess_image(os.path.join("static", "child_images", child.image_front_name)))
-            if config.use_back:
-                x_back.append(await preprocess_image(os.path.join("static", "child_images", child.image_back_name)))
-            if config.use_left:
-                x_left.append(await preprocess_image(os.path.join("static", "child_images", child.image_left_name)))
-            if config.use_right:
-                x_right.append(await preprocess_image(os.path.join("static", "child_images", child.image_right_name)))
+            # Gabungkan semua gambar yang tersedia
+            combined_image = np.mean(images, axis=0) if len(images) > 1 else images[0]
+            all_images.append(combined_image)
             y.append([child.height, child.weight])
     
-    # Konversi ke numpy array hanya untuk yang aktif
-    if config.use_front:
-        x_front = np.vstack(x_front) if x_front else np.array([])
-    if config.use_back:
-        x_back = np.vstack(x_back) if x_back else np.array([])
-    if config.use_left:
-        x_left = np.vstack(x_left) if x_left else np.array([])
-    if config.use_right:
-        x_right = np.vstack(x_right) if x_right else np.array([])
-    
-    return x_front, x_back, x_left, x_right, np.array(y)
+    return np.vstack(all_images) if all_images else np.array([]), np.array(y)
 
 
 async def create_and_compile_model(config: stunting_schema.TrainingConfig):
-    inputs = []
+    # Base model yang sama untuk semua gambar
     base_model = MobileNetV2(weights='imagenet', include_top=False, input_shape=(*IMAGE_SIZE, 3))
     
-    # Fine-tuning
-    for layer in base_model.layers[-20:]:
-        layer.trainable = True
-
-    # Create input layers based on config
-    if config.use_front:
-        inputs.append(Input(shape=(*IMAGE_SIZE, 3), name="input_front"))
-    if config.use_back:
-        inputs.append(Input(shape=(*IMAGE_SIZE, 3), name="input_back"))
-    if config.use_left:
-        inputs.append(Input(shape=(*IMAGE_SIZE, 3), name="input_left"))
-    if config.use_right:
-        inputs.append(Input(shape=(*IMAGE_SIZE, 3), name="input_right"))
-
-    # Process inputs
-    processed = [GlobalAveragePooling2D()(base_model(input)) for input in inputs]
-    x = Concatenate()(processed) if len(processed) > 1 else processed[0]
-
+    # Buat satu input layer yang fleksibel
+    input_layer = Input(shape=(*IMAGE_SIZE, 3), name="input_image")
+    
+    # Proses gambar melalui base model
+    features = GlobalAveragePooling2D()(base_model(input_layer))
+    
     # Model architecture
-    x = Dense(1024, activation='relu')(x)
+    x = Dense(1024, activation='relu')(features)
     x = Dropout(0.5)(x)
     x = Dense(512, activation='relu')(x)
     x = Dropout(0.3)(x)
     output = Dense(2, activation='linear')(x)
 
-    model = Model(inputs=inputs, outputs=output)
+    model = Model(inputs=input_layer, outputs=output)
 
-    # Configure optimizer
     if config.optimizer.lower() == "sgd":
         model.compile(optimizer=SGD(learning_rate=config.learning_rate), loss='mse')
-    else:  # Default to Adam
+    else:
         model.compile(optimizer=Adam(learning_rate=config.learning_rate), loss='mse')
         
     return model
@@ -178,7 +157,7 @@ async def train_model(db: AsyncSession, config: stunting_schema.TrainingConfig):
             children = await db.execute(select(child_model.Child))
             children = children.scalars().all()
             
-            x_front, x_back, x_left, x_right, y = await load_and_preprocess_images(children, config)
+            X, y = await load_and_preprocess_images(children, config)
             
             if len(y) == 0:
                 raise HTTPException(status_code=400, detail="No valid data found for training")
@@ -186,30 +165,20 @@ async def train_model(db: AsyncSession, config: stunting_schema.TrainingConfig):
             scaler = StandardScaler()
             y_scaled = scaler.fit_transform(y)
 
-            # Prepare active inputs
-            active_inputs = []
-            if config.use_front:
-                active_inputs.append(x_front)
-            if config.use_back:
-                active_inputs.append(x_back)
-            if config.use_left:
-                active_inputs.append(x_left)
-            if config.use_right:
-                active_inputs.append(x_right)
-
             # Train/val split
-            split_data = train_test_split(*active_inputs, y_scaled, test_size=config.test_size, random_state=42)
-            y_train, y_val = split_data[-2], split_data[-1]
-            x_train = [split_data[i] for i in range(0, len(active_inputs)*2, 2)]
-            x_val = [split_data[i] for i in range(1, len(active_inputs)*2, 2)]
+            X_train, X_val, y_train, y_val = train_test_split(
+                X, y_scaled, 
+                test_size=config.test_size, 
+                random_state=42
+            )
 
             # Create and train model
             model = await create_and_compile_model(config)
             model, history = await train_model_with_data(
                 model,
-                x_train,
+                X_train,
                 y_train,
-                x_val,
+                X_val,
                 y_val,
                 config
             )
@@ -219,7 +188,6 @@ async def train_model(db: AsyncSession, config: stunting_schema.TrainingConfig):
             model.save(MODEL_PATH)
             joblib.dump(scaler, SCALER_PATH)
 
-            # Get the actual number of epochs run (might be less than config.epochs due to early stopping)
             actual_epochs = len(history.history['loss'])
             
             return {
@@ -345,11 +313,11 @@ async def evaluate_stunting_model(
 
 async def evaluate_model(db: AsyncSession, config: stunting_schema.EvaluationConfig) -> dict[str, Any]:
     if not os.path.exists(MODEL_PATH) or not os.path.exists(SCALER_PATH):
-        raise HTTPException(status_code=400, detail="Model or scaler not found. Please train the model first.")
+        raise HTTPException(status_code=400, detail="Model or scaler not found.")
 
     children = await db.execute(select(child_model.Child))
     children = children.scalars().all()
-    x_front, x_back, x_left, x_right, y_true = await load_and_preprocess_images(children, config)
+    X, y_true = await load_and_preprocess_images(children, config)
 
     if len(y_true) == 0:
         raise HTTPException(status_code=400, detail="No valid data found for evaluation")
@@ -357,17 +325,7 @@ async def evaluate_model(db: AsyncSession, config: stunting_schema.EvaluationCon
     model = load_model(MODEL_PATH)
     scaler = joblib.load(SCALER_PATH)
 
-    eval_inputs = []
-    if config.use_front:
-        eval_inputs.append(x_front)
-    if config.use_back:
-        eval_inputs.append(x_back)
-    if config.use_left:
-        eval_inputs.append(x_left)
-    if config.use_right:
-        eval_inputs.append(x_right)
-
-    y_pred_scaled = model.predict(eval_inputs)
+    y_pred_scaled = model.predict(X)
     y_pred = scaler.inverse_transform(y_pred_scaled)
 
     mae_height, mae_weight, rmse_height, rmse_weight = await calculate_metrics(y_true, y_pred)
@@ -378,7 +336,6 @@ async def evaluate_model(db: AsyncSession, config: stunting_schema.EvaluationCon
         "rmse_height": rmse_height,
         "rmse_weight": rmse_weight,
         "created_at": datetime.now(),
-        # "config_used": config.dict()  # Pindahkan ke sini
     }
 
 
@@ -425,18 +382,8 @@ async def predict_all(
     config: stunting_schema.PredictionConfig = None,
     db: AsyncSession = Depends(deps.get_db)
 ):
-    """
-    Predict for all children with configurable image inputs
-    
-    Parameters:
-    - use_front: bool - Use front image
-    - use_back: bool - Use back image 
-    - use_left: bool - Use left image
-    - use_right: bool - Use right image
-    - use_all: bool - Use all images (overrides individual settings)
-    """
     try:
-        # Initialize config with defaults if not provided
+        # Initialize config
         if config is None:
             config = stunting_schema.PredictionConfig()
             
@@ -451,84 +398,83 @@ async def predict_all(
         model = load_model(MODEL_PATH)
         scaler = joblib.load(SCALER_PATH)
 
-        # Get all children - outside of transaction since we're just reading
-        result = await db.execute(select(child_model.Child))
-        children = result.scalars().all()
+        # Get all children with their stunting status
+        stmt = select(child_model.Child).where(child_model.Child.is_stunting.isnot(None))
+        children = (await db.execute(stmt)).scalars().all()
         
         if not children:
-            raise HTTPException(status_code=404, detail="No children found")
+            raise HTTPException(status_code=404, detail="No children with stunting status found")
 
-        predictions = []
         y_true = []
         y_pred = []
+        processed_count = 0
 
-        # Process children without explicit transaction
         for child in children:
             try:
-                # Prepare inputs based on config
-                input_images = []
-                if config.use_front and child.image_front_name:
-                    img = await preprocess_image(os.path.join("static", "child_images", child.image_front_name))
-                    input_images.append(img)
-                if config.use_back and child.image_back_name:
-                    img = await preprocess_image(os.path.join("static", "child_images", child.image_back_name))
-                    input_images.append(img)
-                if config.use_left and child.image_left_name:
-                    img = await preprocess_image(os.path.join("static", "child_images", child.image_left_name))
-                    input_images.append(img)
-                if config.use_right and child.image_right_name:
-                    img = await preprocess_image(os.path.join("static", "child_images", child.image_right_name))
-                    input_images.append(img)
-
-                if not input_images:
+                # Prepare images
+                images = []
+                for img_type in ['front', 'back', 'left', 'right']:
+                    if getattr(config, f'use_{img_type}'):
+                        img_name = getattr(child, f'image_{img_type}_name')
+                        if img_name:
+                            img_path = os.path.join("static", "child_images", img_name)
+                            if os.path.exists(img_path):
+                                img = await preprocess_image(img_path)
+                                # Remove batch dimension (1,224,224,3) -> (224,224,3)
+                                img = np.squeeze(img, axis=0)
+                                images.append(img)
+                
+                if not images:
                     continue
 
-                # Predict
-                scaled_pred = model.predict(input_images)
-                height, weight = scaler.inverse_transform(scaled_pred)[0]
+                # Combine images by averaging and reshape to model input format
+                combined_image = np.mean(images, axis=0) if len(images) > 1 else images[0]
+                # Add back batch dimension (224,224,3) -> (1,224,224,3)
+                combined_image = np.expand_dims(combined_image, axis=0)
 
-                # Get condition predictions
-                condition = await predict_child_condition(db, child)
+                # Predict
+                scaled_pred = model.predict(combined_image)
+                height, weight = scaler.inverse_transform(scaled_pred)[0]
                 
                 # Update child record
                 child.predict_height = round(float(height), 2)
                 child.predict_weight = round(float(weight), 2)
+                
+                # Get condition predictions
+                condition = await predict_child_condition(db, child)
+                
                 child.predict_stunting = condition["is_stunting"]
                 child.predict_wasting = condition["is_wasting"]
                 child.predict_overweight = condition["is_overweight"]
                 
-                # Add to session
                 db.add(child)
-                await db.commit()  # Commit each update individually
+                processed_count += 1
 
-                # Collect results
-                predictions.append({
-                    "child_id": child.id,
-                    "actual_height": child.height,
-                    "actual_weight": child.weight,
-                    "predicted_height": child.predict_height,
-                    "predicted_weight": child.predict_weight,
-                    "predicted_stunting": child.predict_stunting,
-                    "predicted_wasting": child.predict_wasting,
-                    "predicted_overweight": child.predict_overweight,
-                    "actual_stunting": child.is_stunting
-                })
-
-                if child.is_stunting is not None:
-                    y_true.append(child.is_stunting)
-                    y_pred.append(child.predict_stunting)
+                # Collect ground truth and predictions
+                y_true.append(child.is_stunting)
+                y_pred.append(child.predict_stunting)
 
             except Exception as e:
-                await db.rollback()  # Rollback if error occurs
-                logging.error(f"Prediction failed for child {child.id}: {str(e)}")
+                logging.error(f"Error processing child {child.id}: {str(e)}")
                 continue
 
-        # Calculate and return performance metrics
+        await db.commit()
+
+        if not y_true:
+            raise HTTPException(
+                status_code=400,
+                detail=f"No valid predictions made. {processed_count} processed, {len(children)-processed_count} failed."
+            )
+
         return await calculate_performance(y_true, y_pred)
 
     except Exception as e:
-        logging.error(f"Predict-all failed: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        await db.rollback()
+        logging.error(f"Predict-all failed: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Server error: {str(e)}"
+        )
 
 
 async def predict_child(child: child_model.Child, model, scaler, db: AsyncSession) -> dict:
@@ -590,30 +536,27 @@ async def calculate_system_performance(db: AsyncSession = Depends(deps.get_db)):
 
 
 async def calculate_performance_metrics(y_true, y_pred):
-    precision = round(await asyncio.to_thread(precision_score, y_true, y_pred), 2)
-    recall = round(await asyncio.to_thread(recall_score, y_true, y_pred), 2)
-    f1 = round(await asyncio.to_thread(f1_score, y_true, y_pred), 2)
-    return precision, recall, f1
+    precision = await asyncio.to_thread(precision_score, y_true, y_pred)
+    recall = await asyncio.to_thread(recall_score, y_true, y_pred)
+    f1 = await asyncio.to_thread(f1_score, y_true, y_pred)
+    acuracy = await asyncio.to_thread(accuracy_score, y_true, y_pred)
+    return round(precision, 2), round(recall, 2), round(f1, 2), round(acuracy, 2)
 
 
 async def calculate_performance_confusion_matrix(y_true, y_pred):
-    true_positives = false_positives = true_negatives = false_negatives = 0
-
-    for t, p in zip(y_true, y_pred):
-        if t and p:
-            true_positives += 1
-        elif not t and p:
-            false_positives += 1
-        elif not t and not p:
-            true_negatives += 1
-        elif t and not p:
-            false_negatives += 1
-
-    return true_positives, false_positives, true_negatives, false_negatives
+    tn, fp, fn, tp = (await asyncio.to_thread(confusion_matrix, y_true, y_pred, labels=[0, 1])).ravel()
+    return tp, fp, tn, fn
 
 
 async def calculate_performance(y_true, y_pred) -> stunting_schema.SystemPerformanceResponse:
-    precision, recall, f1 = await calculate_performance_metrics(y_true, y_pred)
+    if len(y_true) == 0 or len(y_pred) == 0:
+        raise ValueError("Input arrays cannot be empty")
+    
+    unique_values = set(y_true).union(set(y_pred))
+    if not unique_values.issubset({0, 1}):
+        raise ValueError("Input arrays must contain only binary values (0 and 1)")
+
+    precision, recall, f1, acuracy = await calculate_performance_metrics(y_true, y_pred)
     true_positives, false_positives, true_negatives, false_negatives = await calculate_performance_confusion_matrix(
         y_true, y_pred)
 
@@ -621,6 +564,7 @@ async def calculate_performance(y_true, y_pred) -> stunting_schema.SystemPerform
         "precision": precision,
         "recall": recall,
         "f1_score": f1,
+        "acuracy": acuracy,
         "true_positives": true_positives,
         "false_positives": false_positives,
         "true_negatives": true_negatives,

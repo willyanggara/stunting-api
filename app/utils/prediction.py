@@ -29,7 +29,7 @@ async def predict_stunting(db: AsyncSession, child: Child):
     height_for_age = await get_height_for_age_data(db, age_months, child.gender)
 
     if height_for_age:
-        if child.height < height_for_age.sd_2_negative:
+        if child.predict_height < height_for_age.sd_2_negative:
             return True
     return False
 
@@ -39,7 +39,7 @@ async def predict_wasting(db: AsyncSession, child: Child):
     weight_for_age = await get_weight_for_age_data(db, age_months, child.gender)
 
     if weight_for_age:
-        if child.weight < weight_for_age.sd_2_negative:
+        if child.predict_weight < weight_for_age.sd_2_negative:
             return True
     return False
 
@@ -49,7 +49,7 @@ async def predict_overweight(db: AsyncSession, child: Child):
     weight_for_age = await get_weight_for_age_data(db, age_months, child.gender)
 
     if weight_for_age:
-        if child.weight > weight_for_age.sd_2_positive:
+        if child.predict_weight > weight_for_age.sd_2_positive:
             return True
     return False
 
