@@ -56,7 +56,7 @@ class SystemPerformanceResponse(BaseModel):
     precision: float
     recall: float
     f1_score: float
-    acuracy: float
+    accuracy: float
     true_positives: int
     false_positives: int
     true_negatives: int

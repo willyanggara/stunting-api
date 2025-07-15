@@ -208,12 +208,20 @@ async def train_stunting_model(
     config: stunting_schema.TrainingConfig = None,
     db: AsyncSession = Depends(deps.get_db)
 ):
+    print("Received config:", config)
     try:
         if config is None:
             config = stunting_schema.TrainingConfig()  # Default values
             
         if config.use_all:
             config.use_front = config.use_back = config.use_left = config.use_right = True
+        else:
+            # Validation: At least one view must be selected if use_all is False
+            if not any([config.use_front, config.use_back, config.use_left, config.use_right]):
+                raise HTTPException(
+                    status_code=400,
+                    detail="At least one view must be selected (front, back, left, or right) or set use_all=True"
+                )
 
         # Validate optimizer choice
         if config.optimizer.lower() not in ["adam", "sgd"]:
@@ -273,6 +281,7 @@ async def evaluate_stunting_model(
     config: stunting_schema.EvaluationConfig = None,
     db: AsyncSession = Depends(deps.get_db)
 ):
+    print("Received config:", config)
     try:
         if config is None:
             config = stunting_schema.EvaluationConfig()
@@ -382,6 +391,7 @@ async def predict_all(
     config: stunting_schema.PredictionConfig = None,
     db: AsyncSession = Depends(deps.get_db)
 ):
+    print("Received config:", config)
     try:
         # Initialize config
         if config is None:
@@ -539,8 +549,8 @@ async def calculate_performance_metrics(y_true, y_pred):
     precision = await asyncio.to_thread(precision_score, y_true, y_pred)
     recall = await asyncio.to_thread(recall_score, y_true, y_pred)
     f1 = await asyncio.to_thread(f1_score, y_true, y_pred)
-    acuracy = await asyncio.to_thread(accuracy_score, y_true, y_pred)
-    return round(precision, 2), round(recall, 2), round(f1, 2), round(acuracy, 2)
+    accuracy = await asyncio.to_thread(accuracy_score, y_true, y_pred)
+    return round(precision, 2), round(recall, 2), round(f1, 2), round(accuracy, 2)
 
 
 async def calculate_performance_confusion_matrix(y_true, y_pred):
@@ -556,7 +566,7 @@ async def calculate_performance(y_true, y_pred) -> stunting_schema.SystemPerform
     if not unique_values.issubset({0, 1}):
         raise ValueError("Input arrays must contain only binary values (0 and 1)")
 
-    precision, recall, f1, acuracy = await calculate_performance_metrics(y_true, y_pred)
+    precision, recall, f1, accuracy = await calculate_performance_metrics(y_true, y_pred)
     true_positives, false_positives, true_negatives, false_negatives = await calculate_performance_confusion_matrix(
         y_true, y_pred)
 
@@ -564,7 +574,7 @@ async def calculate_performance(y_true, y_pred) -> stunting_schema.SystemPerform
         "precision": precision,
         "recall": recall,
         "f1_score": f1,
-        "acuracy": acuracy,
+        "accuracy": accuracy,
         "true_positives": true_positives,
         "false_positives": false_positives,
         "true_negatives": true_negatives,
