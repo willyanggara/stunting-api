@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, Float, DateTime
+from sqlalchemy import JSON, Column, Integer, Float, DateTime
 from app.db.base import Base
 from datetime import datetime
 class ModelMetrics(Base):
@@ -9,4 +9,5 @@ class ModelMetrics(Base):
     mae_weight = Column(Float, nullable=False)
     rmse_height = Column(Float, nullable=False)
     rmse_weight = Column(Float, nullable=False)
+    # config_used = Column(JSON)  # Untuk menyimpan konfigurasi evaluasi
     created_at = Column(DateTime, default=datetime.utcnow)

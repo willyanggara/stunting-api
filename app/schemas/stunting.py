@@ -24,6 +24,7 @@ class ModelResponse(BaseModel):
     model_modified: Optional[str] = None
     scaler_path: Optional[str] = None
     scaler_modified: Optional[str] = None
+    training_stats: Optional[dict] = None
 
 class PredictionResponse(BaseModel):
     actual_height: float
@@ -60,3 +61,29 @@ class SystemPerformanceResponse(BaseModel):
     true_negatives: int
     false_negatives: int
     total_samples: int
+        
+class TrainingConfig(BaseModel):
+    use_front: bool = True
+    use_back: bool = True
+    use_left: bool = True
+    use_right: bool = True
+    use_all: bool = False
+    optimizer: str = "adam"  # "adam" or "sgd"
+    learning_rate: float = 0.0001
+    batch_size: int = 16
+    epochs: int = 100
+    test_size: float = 0.1
+    
+class EvaluationConfig(BaseModel):
+    use_front: bool = True
+    use_back: bool = True
+    use_left: bool = True
+    use_right: bool = True
+    use_all: bool = False  # Jika True, abaikan yang lain dan gunakan semua
+    
+class PredictionConfig(BaseModel):
+    use_front: bool = True
+    use_back: bool = True 
+    use_left: bool = True
+    use_right: bool = True
+    use_all: bool = False

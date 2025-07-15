@@ -17,7 +17,7 @@ from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
 from tensorflow.keras.callbacks import ReduceLROnPlateau, EarlyStopping
 from tensorflow.keras.layers import Dense, GlobalAveragePooling2D, Concatenate, Input, Dropout
 from tensorflow.keras.models import Model, load_model
-from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.optimizers import Adam, SGD
 from tensorflow.keras.preprocessing.image import load_img, img_to_array
 
 from app.api import deps
@@ -41,57 +41,109 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 router = APIRouter()
 
 
-async def load_and_preprocess_images(children):
+async def load_and_preprocess_images(children, config: stunting_schema.TrainingConfig):
     x_front, x_back, x_left, x_right, y = [], [], [], [], []
+    
     for child in children:
-        if await validate_images(child):
-            x_front.append(await preprocess_image(os.path.join("static", "child_images", child.image_front_name)))
-            x_back.append(await preprocess_image(os.path.join("static", "child_images", child.image_back_name)))
-            x_left.append(await preprocess_image(os.path.join("static", "child_images", child.image_left_name)))
-            x_right.append(await preprocess_image(os.path.join("static", "child_images", child.image_right_name)))
+        valid = True
+        # Cek hanya gambar yang diperlukan berdasarkan config
+        if config.use_front and not child.image_front_name:
+            valid = False
+        if config.use_back and not child.image_back_name:
+            valid = False
+        if config.use_left and not child.image_left_name:
+            valid = False
+        if config.use_right and not child.image_right_name:
+            valid = False
+            
+        if valid:
+            if config.use_front:
+                x_front.append(await preprocess_image(os.path.join("static", "child_images", child.image_front_name)))
+            if config.use_back:
+                x_back.append(await preprocess_image(os.path.join("static", "child_images", child.image_back_name)))
+            if config.use_left:
+                x_left.append(await preprocess_image(os.path.join("static", "child_images", child.image_left_name)))
+            if config.use_right:
+                x_right.append(await preprocess_image(os.path.join("static", "child_images", child.image_right_name)))
             y.append([child.height, child.weight])
-    return np.vstack(x_front), np.vstack(x_back), np.vstack(x_left), np.vstack(x_right), np.array(y)
+    
+    # Konversi ke numpy array hanya untuk yang aktif
+    if config.use_front:
+        x_front = np.vstack(x_front) if x_front else np.array([])
+    if config.use_back:
+        x_back = np.vstack(x_back) if x_back else np.array([])
+    if config.use_left:
+        x_left = np.vstack(x_left) if x_left else np.array([])
+    if config.use_right:
+        x_right = np.vstack(x_right) if x_right else np.array([])
+    
+    return x_front, x_back, x_left, x_right, np.array(y)
 
 
-async def create_and_compile_model():
-    input_front = Input(shape=(*IMAGE_SIZE, 3))
-    input_back = Input(shape=(*IMAGE_SIZE, 3))
-    input_left = Input(shape=(*IMAGE_SIZE, 3))
-    input_right = Input(shape=(*IMAGE_SIZE, 3))
-
+async def create_and_compile_model(config: stunting_schema.TrainingConfig):
+    inputs = []
     base_model = MobileNetV2(weights='imagenet', include_top=False, input_shape=(*IMAGE_SIZE, 3))
+    
+    # Fine-tuning
     for layer in base_model.layers[-20:]:
         layer.trainable = True
 
-    def process_input(input_layer):
-        x = base_model(input_layer)
-        return GlobalAveragePooling2D()(x)
+    # Create input layers based on config
+    if config.use_front:
+        inputs.append(Input(shape=(*IMAGE_SIZE, 3), name="input_front"))
+    if config.use_back:
+        inputs.append(Input(shape=(*IMAGE_SIZE, 3), name="input_back"))
+    if config.use_left:
+        inputs.append(Input(shape=(*IMAGE_SIZE, 3), name="input_left"))
+    if config.use_right:
+        inputs.append(Input(shape=(*IMAGE_SIZE, 3), name="input_right"))
 
-    x = Concatenate()([process_input(input) for input in [input_front, input_back, input_left, input_right]])
+    # Process inputs
+    processed = [GlobalAveragePooling2D()(base_model(input)) for input in inputs]
+    x = Concatenate()(processed) if len(processed) > 1 else processed[0]
+
+    # Model architecture
     x = Dense(1024, activation='relu')(x)
     x = Dropout(0.5)(x)
     x = Dense(512, activation='relu')(x)
     x = Dropout(0.3)(x)
     output = Dense(2, activation='linear')(x)
 
-    model = Model(inputs=[input_front, input_back, input_left, input_right], outputs=output)
-    model.compile(optimizer=Adam(learning_rate=0.0001), loss='mse')
+    model = Model(inputs=inputs, outputs=output)
+
+    # Configure optimizer
+    if config.optimizer.lower() == "sgd":
+        model.compile(optimizer=SGD(learning_rate=config.learning_rate), loss='mse')
+    else:  # Default to Adam
+        model.compile(optimizer=Adam(learning_rate=config.learning_rate), loss='mse')
+        
     return model
 
 
-async def train_model_with_data(model, x_train, y_train, x_val, y_val):
-    reduce_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.2, patience=5, min_lr=1e-6)
-    early_stopping = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
+async def train_model_with_data(model, x_train, y_train, x_val, y_val, config: stunting_schema.TrainingConfig):
+    reduce_lr = ReduceLROnPlateau(
+        monitor='val_loss', 
+        factor=0.2, 
+        patience=5, 
+        min_lr=1e-6
+    )
+    early_stopping = EarlyStopping(
+        monitor='val_loss',
+        patience=10,
+        restore_best_weights=True
+    )
 
-    model.fit(
-        x_train, y_train,
-        epochs=EPOCHS,
-        batch_size=BATCH_SIZE,
+    history = model.fit(
+        x_train, 
+        y_train,
+        epochs=config.epochs,
+        batch_size=config.batch_size,
         validation_data=(x_val, y_val),
         callbacks=[reduce_lr, early_stopping],
         verbose=1
     )
-    return model
+    
+    return model, history
 
 
 async def calculate_metrics(y_true, y_pred):
@@ -120,56 +172,101 @@ async def validate_images(child):
     return True
 
 
-async def train_model(db: AsyncSession):
-    children = await db.execute(select(child_model.Child))
-    children = children.scalars().all()
-    x_front, x_back, x_left, x_right, y = await load_and_preprocess_images(children)
+async def train_model(db: AsyncSession, config: stunting_schema.TrainingConfig):
+    try:
+        async with db.begin():
+            children = await db.execute(select(child_model.Child))
+            children = children.scalars().all()
+            
+            x_front, x_back, x_left, x_right, y = await load_and_preprocess_images(children, config)
+            
+            if len(y) == 0:
+                raise HTTPException(status_code=400, detail="No valid data found for training")
 
-    if len(y) == 0:
-        raise HTTPException(status_code=400, detail="No valid data found for training")
+            scaler = StandardScaler()
+            y_scaled = scaler.fit_transform(y)
 
-    scaler = StandardScaler()
-    y_scaled = scaler.fit_transform(y)
+            # Prepare active inputs
+            active_inputs = []
+            if config.use_front:
+                active_inputs.append(x_front)
+            if config.use_back:
+                active_inputs.append(x_back)
+            if config.use_left:
+                active_inputs.append(x_left)
+            if config.use_right:
+                active_inputs.append(x_right)
 
-    # Split each input array separately
-    x_train_front, x_val_front, \
-        x_train_back, x_val_back, \
-        x_train_left, x_val_left, \
-        x_train_right, x_val_right, \
-        y_train, y_val = train_test_split(
-        x_front, x_back, x_left, x_right, y_scaled,
-        test_size=0.2, random_state=42
-    )
+            # Train/val split
+            split_data = train_test_split(*active_inputs, y_scaled, test_size=config.test_size, random_state=42)
+            y_train, y_val = split_data[-2], split_data[-1]
+            x_train = [split_data[i] for i in range(0, len(active_inputs)*2, 2)]
+            x_val = [split_data[i] for i in range(1, len(active_inputs)*2, 2)]
 
-    model = await create_and_compile_model()
-    model = await train_model_with_data(
-        model,
-        [x_train_front, x_train_back, x_train_left, x_train_right],
-        y_train,
-        [x_val_front, x_val_back, x_val_left, x_val_right],
-        y_val
-    )
+            # Create and train model
+            model = await create_and_compile_model(config)
+            model, history = await train_model_with_data(
+                model,
+                x_train,
+                y_train,
+                x_val,
+                y_val,
+                config
+            )
 
-    os.makedirs(MODEL_DIR, exist_ok=True)
-    model.save(MODEL_PATH)
-    joblib.dump(scaler, SCALER_PATH)
+            # Save artifacts
+            os.makedirs(MODEL_DIR, exist_ok=True)
+            model.save(MODEL_PATH)
+            joblib.dump(scaler, SCALER_PATH)
 
-    return True
+            # Get the actual number of epochs run (might be less than config.epochs due to early stopping)
+            actual_epochs = len(history.history['loss'])
+            
+            return {
+                "status": "success",
+                "message": f"Training completed (stopped after {actual_epochs} epochs)",
+                "final_loss": history.history['loss'][-1],
+                "final_val_loss": history.history['val_loss'][-1],
+                "epochs_completed": actual_epochs,
+                "stopped_early": actual_epochs < config.epochs
+            }
+    except Exception as e:
+        logging.error(f"Training failed: {str(e)}")
+        raise
 
 
 @router.post("/train-model", response_model=stunting_schema.ModelResponse)
-async def train_stunting_model(db: AsyncSession = Depends(deps.get_db)):
+async def train_stunting_model(
+    config: stunting_schema.TrainingConfig = None,
+    db: AsyncSession = Depends(deps.get_db)
+):
     try:
-        success = await train_model(db)
-        model_path, model_modified, scaler_path, scaler_modified = await check_model_scaler_existence(MODEL_PATH,
-                                                                                                      SCALER_PATH)
+        if config is None:
+            config = stunting_schema.TrainingConfig()  # Default values
+            
+        if config.use_all:
+            config.use_front = config.use_back = config.use_left = config.use_right = True
+
+        # Validate optimizer choice
+        if config.optimizer.lower() not in ["adam", "sgd"]:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid optimizer. Choose either 'adam' or 'sgd'"
+            )
+
+        result = await train_model(db, config)
+        model_path, model_modified, scaler_path, scaler_modified = await check_model_scaler_existence(
+            MODEL_PATH, SCALER_PATH
+        )
+        
         return {
-            "message": "Model trained successfully and saved" if success else "Model training failed",
+            "message": "Model trained successfully and saved",
             "model_exists": model_path != "",
             "model_path": model_path,
             "model_modified": model_modified,
             "scaler_path": scaler_path,
-            "scaler_modified": scaler_modified
+            "scaler_modified": scaler_modified,
+            "training_stats": result
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -203,54 +300,85 @@ async def check_model_scaler_existence(model_path: str, scaler_path: str):
     return "", "", "", ""
 
 
-@router.get("/evaluate-model", response_model=stunting_schema.ModelMetrics)
-async def evaluate_stunting_model(db: AsyncSession = Depends(deps.get_db)):
+@router.post("/evaluate-model", response_model=stunting_schema.ModelMetrics)
+async def evaluate_stunting_model(
+    config: stunting_schema.EvaluationConfig = None,
+    db: AsyncSession = Depends(deps.get_db)
+):
     try:
-        metrics = await evaluate_model(db)
-        # Save metrics to the database
-        db_metrics = ModelMetrics(**metrics)
+        if config is None:
+            config = stunting_schema.EvaluationConfig()
+            
+        if config.use_all:
+            config.use_front = config.use_back = config.use_left = config.use_right = True
+
+        metrics = await evaluate_model(db, config)
+        
+        # Buat objek ModelMetrics tanpa duplikasi parameter
+        db_metrics = ModelMetrics(
+            mae_height=metrics["mae_height"],
+            mae_weight=metrics["mae_weight"],
+            rmse_height=metrics["rmse_height"],
+            rmse_weight=metrics["rmse_weight"],
+            # config_used=metrics["config_used"],  # Ambil dari metrics yang sudah include config
+            created_at=metrics["created_at"]
+        )
+        
         db.add(db_metrics)
         await db.commit()
         await db.refresh(db_metrics)
 
-        metrics["created_at"] = metrics["created_at"].strftime("%d %B %Y, %H:%M")
+        # Format response
+        response = {
+            "mae_height": db_metrics.mae_height,
+            "mae_weight": db_metrics.mae_weight,
+            "rmse_height": db_metrics.rmse_height,
+            "rmse_weight": db_metrics.rmse_weight,
+            # "config_used": db_metrics.config_used,
+            "created_at": db_metrics.created_at.strftime("%d %B %Y, %H:%M")
+        }
 
-        return metrics
+        return response
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-async def evaluate_model(db: AsyncSession) -> dict[str, datetime | Any]:
+async def evaluate_model(db: AsyncSession, config: stunting_schema.EvaluationConfig) -> dict[str, Any]:
     if not os.path.exists(MODEL_PATH) or not os.path.exists(SCALER_PATH):
         raise HTTPException(status_code=400, detail="Model or scaler not found. Please train the model first.")
 
     children = await db.execute(select(child_model.Child))
     children = children.scalars().all()
-    x_front, x_back, x_left, x_right, y_true = await load_and_preprocess_images(children)
+    x_front, x_back, x_left, x_right, y_true = await load_and_preprocess_images(children, config)
 
     if len(y_true) == 0:
         raise HTTPException(status_code=400, detail="No valid data found for evaluation")
 
-    # Load the model and scaler
     model = load_model(MODEL_PATH)
     scaler = joblib.load(SCALER_PATH)
 
-    # Make predictions
-    y_pred_scaled = model.predict([x_front, x_back, x_left, x_right])
+    eval_inputs = []
+    if config.use_front:
+        eval_inputs.append(x_front)
+    if config.use_back:
+        eval_inputs.append(x_back)
+    if config.use_left:
+        eval_inputs.append(x_left)
+    if config.use_right:
+        eval_inputs.append(x_right)
+
+    y_pred_scaled = model.predict(eval_inputs)
     y_pred = scaler.inverse_transform(y_pred_scaled)
 
-    # Calculate metrics
     mae_height, mae_weight, rmse_height, rmse_weight = await calculate_metrics(y_true, y_pred)
-
-    logging.info(
-        f"Model evaluation completed. MAE Height: {mae_height:.2f}, MAE Weight: {mae_weight:.2f}, RMSE Height: {rmse_height:.2f}, RMSE Weight: {rmse_weight:.2f}")
 
     return {
         "mae_height": mae_height,
         "mae_weight": mae_weight,
         "rmse_height": rmse_height,
         "rmse_weight": rmse_weight,
-        "created_at": datetime.now()
+        "created_at": datetime.now(),
+        # "config_used": config.dict()  # Pindahkan ke sini
     }
 
 
@@ -293,32 +421,114 @@ async def predict_height_weight(child_id: int, db: AsyncSession = Depends(deps.g
 
 
 @router.post("/predict-all", response_model=stunting_schema.SystemPerformanceResponse)
-async def predict_all(db: AsyncSession = Depends(deps.get_db)):
-    if not os.path.exists(MODEL_PATH) or not os.path.exists(SCALER_PATH):
-        raise HTTPException(status_code=400, detail="Model or scaler not found. Please train the model first.")
+async def predict_all(
+    config: stunting_schema.PredictionConfig = None,
+    db: AsyncSession = Depends(deps.get_db)
+):
+    """
+    Predict for all children with configurable image inputs
+    
+    Parameters:
+    - use_front: bool - Use front image
+    - use_back: bool - Use back image 
+    - use_left: bool - Use left image
+    - use_right: bool - Use right image
+    - use_all: bool - Use all images (overrides individual settings)
+    """
+    try:
+        # Initialize config with defaults if not provided
+        if config is None:
+            config = stunting_schema.PredictionConfig()
+            
+        if config.use_all:
+            config.use_front = config.use_back = config.use_left = config.use_right = True
 
-    children = await db.execute(select(child_model.Child))
-    children = children.scalars().all()
-    if not children:
-        raise HTTPException(status_code=404, detail="No children found in the database")
+        # Validate model exists
+        if not os.path.exists(MODEL_PATH) or not os.path.exists(SCALER_PATH):
+            raise HTTPException(status_code=400, detail="Model or scaler not found")
 
-    model = load_model(MODEL_PATH)
-    scaler = joblib.load(SCALER_PATH)
+        # Load model and scaler
+        model = load_model(MODEL_PATH)
+        scaler = joblib.load(SCALER_PATH)
 
-    predictions = []
-    y_true = []
-    y_pred = []
-    for child in children:
-        prediction = await predict_child(child, model, scaler, db)
-        if prediction:
-            predictions.append(prediction)
-        if child.is_stunting is not None and prediction["predicted_stunting"] is not None:
-            y_true.append(child.is_stunting)
-            y_pred.append(prediction["predicted_stunting"])
+        # Get all children - outside of transaction since we're just reading
+        result = await db.execute(select(child_model.Child))
+        children = result.scalars().all()
+        
+        if not children:
+            raise HTTPException(status_code=404, detail="No children found")
 
-    await db.commit()
+        predictions = []
+        y_true = []
+        y_pred = []
 
-    return await calculate_performance(y_true, y_pred)
+        # Process children without explicit transaction
+        for child in children:
+            try:
+                # Prepare inputs based on config
+                input_images = []
+                if config.use_front and child.image_front_name:
+                    img = await preprocess_image(os.path.join("static", "child_images", child.image_front_name))
+                    input_images.append(img)
+                if config.use_back and child.image_back_name:
+                    img = await preprocess_image(os.path.join("static", "child_images", child.image_back_name))
+                    input_images.append(img)
+                if config.use_left and child.image_left_name:
+                    img = await preprocess_image(os.path.join("static", "child_images", child.image_left_name))
+                    input_images.append(img)
+                if config.use_right and child.image_right_name:
+                    img = await preprocess_image(os.path.join("static", "child_images", child.image_right_name))
+                    input_images.append(img)
+
+                if not input_images:
+                    continue
+
+                # Predict
+                scaled_pred = model.predict(input_images)
+                height, weight = scaler.inverse_transform(scaled_pred)[0]
+
+                # Get condition predictions
+                condition = await predict_child_condition(db, child)
+                
+                # Update child record
+                child.predict_height = round(float(height), 2)
+                child.predict_weight = round(float(weight), 2)
+                child.predict_stunting = condition["is_stunting"]
+                child.predict_wasting = condition["is_wasting"]
+                child.predict_overweight = condition["is_overweight"]
+                
+                # Add to session
+                db.add(child)
+                await db.commit()  # Commit each update individually
+
+                # Collect results
+                predictions.append({
+                    "child_id": child.id,
+                    "actual_height": child.height,
+                    "actual_weight": child.weight,
+                    "predicted_height": child.predict_height,
+                    "predicted_weight": child.predict_weight,
+                    "predicted_stunting": child.predict_stunting,
+                    "predicted_wasting": child.predict_wasting,
+                    "predicted_overweight": child.predict_overweight,
+                    "actual_stunting": child.is_stunting
+                })
+
+                if child.is_stunting is not None:
+                    y_true.append(child.is_stunting)
+                    y_pred.append(child.predict_stunting)
+
+            except Exception as e:
+                await db.rollback()  # Rollback if error occurs
+                logging.error(f"Prediction failed for child {child.id}: {str(e)}")
+                continue
+
+        # Calculate and return performance metrics
+        return await calculate_performance(y_true, y_pred)
+
+    except Exception as e:
+        logging.error(f"Predict-all failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 async def predict_child(child: child_model.Child, model, scaler, db: AsyncSession) -> dict:
